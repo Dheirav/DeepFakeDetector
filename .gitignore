@@ -1,0 +1,13 @@
+data/real/*
+data/ai_generated/*
+data/ai_edited/*
+!data/**/.gitkeep
+
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+
+
+
+
