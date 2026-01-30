@@ -1,29 +1,64 @@
 
+# === Standard Library Imports ===
+import os
+import random
+import argparse
+import platform
+import yaml
 
+# === Third-Party Imports ===
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.profiler
 import torchvision.models as models
 import matplotlib.pyplot as plt
-import os
-import argparse
-import random
-import numpy as np
-from dataloader.dataset import DeepfakeDataset
-from preprocessing.preprocessing import train_transform, val_transform
 from torch.utils.data import DataLoader, random_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-import yaml
+
+# === Albumentations (Augmentations) ===
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
+
+# === System Monitoring (Optional) ===
+try:
+    import psutil
+except ImportError:
+    psutil = None
+try:
+    from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo, nvmlDeviceGetUtilizationRates, nvmlShutdown
+    pynvml_available = True
+except ImportError:
+    pynvml_available = False
+
+# === Project Imports ===
+from dataloader.dataset import DeepfakeDataset
+from preprocessing.preprocessing import train_transform, val_transform
 
 def get_data_loaders(data_dir, batch_size, val_split=0.2, seed=42):
-    dataset = DeepfakeDataset(data_dir, transform=train_transform)
+    # --- Augmentation Optimization ---
+    # Use only necessary augmentations for generalization if light_augment is True
+    if light_augment:
+        # Only basic augmentations: resize, flip, normalize
+        basic_transform = A.Compose([
+            A.Resize(224, 224),
+            A.HorizontalFlip(p=0.5),
+            A.Normalize(),
+            ToTensorV2()
+        ])
+        dataset = DeepfakeDataset(data_dir, transform=basic_transform)
+    else:
+        # Full augmentations as defined in preprocessing.py
+        dataset = DeepfakeDataset(data_dir, transform=train_transform)
     val_size = int(len(dataset) * val_split)
     train_size = len(dataset) - val_size
     generator = torch.Generator().manual_seed(seed)
     train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    # Always keep pin_memory=True for GPU training
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
     return train_loader, val_loader
 
 def set_seed(seed=42):
@@ -46,6 +81,10 @@ def train(
     seed=42,
     config_path=None
 ):
+    # Initialize GPU monitoring if available
+    if pynvml_available:
+        nvmlInit()
+        gpu_handle = nvmlDeviceGetHandleByIndex(0)
     # Load config if provided
     if config_path:
         with open(config_path, 'r') as f:
@@ -67,7 +106,13 @@ def train(
 
     writer = SummaryWriter(log_dir=os.path.join(plot_dir, "tensorboard"))
 
-    train_loader, val_loader = get_data_loaders(data_dir, batch_size, val_split, seed)
+    # Use light augmentations if specified in config or CLI
+    light_augment = False
+    if config_path:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        light_augment = config.get('light_augment', False)
+    train_loader, val_loader = get_data_loaders(data_dir, batch_size, val_split, seed, light_augment=light_augment)
 
     model = models.resnet18(pretrained=True)
     model.fc = nn.Linear(512, 3)
@@ -88,22 +133,80 @@ def train(
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
 
+    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
+    import torch.profiler
     for epoch in range(epochs):
         model.train()
         running_loss = 0
         correct, total = 0, 0
         loop = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}")
-        for images, labels in loop:
-            images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item() * images.size(0)
-            _, preds = torch.max(outputs, 1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
+
+        # --- Resource Monitoring ---
+        sys_stats = {}
+        if psutil:
+            sys_stats['cpu_percent'] = psutil.cpu_percent(interval=0.5)
+            sys_stats['ram_percent'] = psutil.virtual_memory().percent
+        if pynvml_available:
+            meminfo = nvmlDeviceGetMemoryInfo(gpu_handle)
+            util = nvmlDeviceGetUtilizationRates(gpu_handle)
+            sys_stats['gpu_mem_used_MB'] = meminfo.used // (1024*1024)
+            sys_stats['gpu_mem_total_MB'] = meminfo.total // (1024*1024)
+            sys_stats['gpu_util_percent'] = util.gpu
+        # Log to console and TensorBoard
+        print(f"[Resource] Epoch {epoch+1}: {sys_stats}")
+        for k, v in sys_stats.items():
+            writer.add_scalar(f"Resource/{k}", v, epoch+1)
+
+        if epoch == 0:
+            with torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=0, warmup=1, active=2, repeat=0),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(plot_dir, "profiler")),
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+            ) as prof:
+                for images, labels in loop:
+                    images, labels = images.to(device), labels.to(device)
+                    optimizer.zero_grad()
+                    if scaler:
+                        with torch.cuda.amp.autocast():
+                            outputs = model(images)
+                            loss = criterion(outputs, labels)
+                        scaler.scale(loss).backward()
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        outputs = model(images)
+                        loss = criterion(outputs, labels)
+                        loss.backward()
+                        optimizer.step()
+                    running_loss += loss.item() * images.size(0)
+                    _, preds = torch.max(outputs, 1)
+                    correct += (preds == labels).sum().item()
+                    total += labels.size(0)
+                    prof.step()
+            print("\n[PyTorch Profiler] First epoch summary:")
+            print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
+        else:
+            for images, labels in loop:
+                images, labels = images.to(device), labels.to(device)
+                optimizer.zero_grad()
+                if scaler:
+                    with torch.cuda.amp.autocast():
+                        outputs = model(images)
+                        loss = criterion(outputs, labels)
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
+                    loss.backward()
+                    optimizer.step()
+                running_loss += loss.item() * images.size(0)
+                _, preds = torch.max(outputs, 1)
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
         train_loss = running_loss / total
         train_acc = correct / total
         train_losses.append(train_loss)
@@ -118,8 +221,13 @@ def train(
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                loss = criterion(outputs, labels)
+                if scaler:
+                    with torch.cuda.amp.autocast():
+                        outputs = model(images)
+                        loss = criterion(outputs, labels)
+                else:
+                    outputs = model(images)
+                    loss = criterion(outputs, labels)
                 val_loss += loss.item() * images.size(0)
                 _, preds = torch.max(outputs, 1)
                 val_correct += (preds == labels).sum().item()
@@ -135,9 +243,10 @@ def train(
 
         print(f"Epoch {epoch+1}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f}, Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}")
 
-        # Save checkpoint
+        # Save checkpoint every epoch
         checkpoint_path = os.path.join(checkpoint_dir, f"resnet18_epoch{epoch+1}.pth")
         torch.save(model.state_dict(), checkpoint_path)
+        print(f"Checkpoint saved at epoch {epoch+1}")
 
         # Save best model
         if val_acc > best_val_acc:
@@ -165,6 +274,8 @@ def train(
     plt.savefig(os.path.join(plot_dir, "accuracy_curve.png"))
 
     writer.close()
+    if pynvml_available:
+        nvmlShutdown()
     print("Training complete. Best model saved at:", best_model_path)
 
 if __name__ == "__main__":
@@ -179,6 +290,7 @@ if __name__ == "__main__":
     parser.add_argument('--plot_dir', type=str, default="results", help='Directory to save plots')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--config', type=str, default=None, help='Path to YAML config file')
+    parser.add_argument('--light_augment', action='store_true', help='Use only essential augmentations for faster training')
     args = parser.parse_args()
     train(
         data_dir=args.data_dir,
@@ -190,5 +302,6 @@ if __name__ == "__main__":
         checkpoint_dir=args.checkpoint_dir,
         plot_dir=args.plot_dir,
         seed=args.seed,
-        config_path=args.config
+        config_path=args.config,
+        light_augment=args.light_augment
     )

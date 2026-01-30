@@ -1,0 +1,32 @@
+random_seed: 42
+
+image_rules:
+  min_width: 256
+  min_height: 256
+  target_resolution: 512
+  blur_threshold: 80
+
+class_targets:
+  real:
+    FFHQ: 5000
+    COCO: 6000
+    OpenImages: 5000
+    ImageNet: 4000
+
+  ai_generated:
+    StyleGAN: 7000
+    StableDiffusion: 7000
+    Midjourney_DALLE: 4000
+    LAION: 4000
+
+  ai_edited:
+    FaceForensics: 6000
+    ForgeryNet: 5000
+    CASIA: 4000
+    IMD2020: 4000
+    DEFACTO: 3000
+
+split_ratios:
+  train: 0.8
+  val: 0.1
+  test: 0.1

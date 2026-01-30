@@ -176,6 +176,59 @@ project-root/
 
 ---
 
+## Hardware-Specific Training Configurations
+
+To ensure stable training and avoid system crashes or overheating, use the following recommended configurations based on your laptop/PC specs. Adjust `batch_size` and `epochs` in `scripts/training/train_config.yaml` or via CLI as needed.
+
+### 1. **Entry-Level Laptop (Integrated GPU or Low VRAM <2GB, 8GB RAM)**
+- `batch_size: 8-16`
+- `epochs: 10-15`
+- `num_workers: 1`
+- `pin_memory: False`
+- Use `train_baseline.py` for best stability.
+
+### 2. **Mid-Range Laptop (GTX 1650/3050, 4GB VRAM, 8-16GB RAM)**
+- `batch_size: 16-32`
+- `epochs: 15-20`
+- `num_workers: 2`
+- `pin_memory: True`
+- Use `train_full.py` with moderate settings.
+
+### 3. **High-End Laptop (RTX 4060/4070, 8GB+ VRAM, 16GB+ RAM)**
+- `batch_size: 64`
+- `epochs: 30`
+- `num_workers: 2-4`
+- `pin_memory: True`
+- Enable mixed precision for faster training (ask for help if needed).
+
+**Tip:** If you get CUDA out-of-memory errors, reduce `batch_size` and restart training. Monitor system temperature and usage with `nvidia-smi` and system tools.
+
+---
+
+## Monitoring GPU and CPU Usage During Training
+
+To ensure your system is running efficiently and not overheating during training, monitor your hardware usage:
+
+### GPU Monitoring
+- **Command:**
+  ```bash
+  watch -n 1 nvidia-smi
+  ```
+- Shows GPU utilization, memory usage, temperature, and running processes.
+- If GPU memory is nearly full or temperature is high (>80°C), reduce batch size or pause training.
+
+### CPU & RAM Monitoring
+- **Command:**
+  ```bash
+  htop
+  ```
+- Shows CPU core usage, RAM usage, and running processes in real time.
+- Install with `sudo apt install htop` if not present.
+
+**Tip:** Always monitor your system during the first few epochs of a new experiment, especially with new batch sizes or model changes.
+
+---
+
 ## Contributors & Roles
 - Data Collection: Person 1
 - Data Cleaning/Preprocessing: Person 2
@@ -193,3 +246,45 @@ project-root/
 - [COCO Dataset](https://cocodataset.org/)
 - [ImageNet](https://www.image-net.org/)
 - [FaceForensics++](https://github.com/ondyari/FaceForensics)
+
+---
+
+# Deepfake Detection Project
+
+This repository provides tools, scripts, and pipelines for building, training, and evaluating deepfake detection models.
+
+## Project Structure
+- `dataset_builder/`: Production-grade, deterministic dataset builder pipeline ([see detailed docs](dataset_builder/README.md))
+- `models/`: Model architectures and training scripts
+- `scripts/`: Data processing, evaluation, and utility scripts
+- `data/`: Raw and processed data directories
+- `results/`: Experiment outputs and results
+
+## Dataset Builder Pipeline
+The `dataset_builder` module provides a robust, auditable, and fully automated pipeline for constructing machine learning datasets for deepfake detection. It supports:
+- Modular, deterministic, and config-driven stages
+- Strong error handling and compliance validation
+- Dry-run and strict mode for safe experimentation
+- Structured logging and reporting
+
+See [dataset_builder/README.md](dataset_builder/README.md) for full usage, configuration, and artifact details.
+
+## Quick Start
+1. Prepare your dataset and config YAML (see `dataset_builder/README.md`).
+2. Run the dataset builder:
+   ```bash
+   cd dataset_builder
+   python main.py --config path/to/config.yaml
+   ```
+3. Train and evaluate models using scripts in `models/` and `scripts/`.
+
+## Requirements
+- Python 3.8+
+- See `requirements.txt` for dependencies
+
+## Documentation
+- [Dataset Builder Pipeline](dataset_builder/README.md)
+- [Project Documentation](PROJECT_DOCUMENTATION.md)
+
+## License
+See LICENSE file.

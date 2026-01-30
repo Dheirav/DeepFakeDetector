@@ -25,8 +25,8 @@ def get_data_loaders(data_dir, batch_size, val_split=0.2, seed=42):
 	train_size = len(dataset) - val_size
 	generator = torch.Generator().manual_seed(seed)
 	train_dataset, val_dataset = random_split(dataset, [train_size, val_size], generator=generator)
-	train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-	val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+	train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+	val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
 	return train_loader, val_loader
 
 def train(

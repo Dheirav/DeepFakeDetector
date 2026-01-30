@@ -2,8 +2,9 @@
 # You can override any of these by passing command-line arguments
 
 data_dir: "data"
-epochs: 20
-batch_size: 32
+# For RTX 4060 8GB VRAM, 16GB RAM:
+epochs: 30
+batch_size: 64
 lr: 0.0001
 optimizer: "adam"
 val_split: 0.2
