@@ -1,0 +1,12 @@
+# Example configuration for train_full.py
+# You can override any of these by passing command-line arguments
+
+data_dir: "data"
+epochs: 20
+batch_size: 32
+lr: 0.0001
+optimizer: "adam"
+val_split: 0.2
+checkpoint_dir: "models"
+plot_dir: "results"
+seed: 42
