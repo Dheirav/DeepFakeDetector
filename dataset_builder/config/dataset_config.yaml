@@ -12,13 +12,12 @@ class_targets:
     COCO: 6000
     OpenImages: 5000
     ImageNet: 4000
-
+    # Optional: Flickr, Unsplash, DSLR sets can be added here if used
   ai_generated:
     StyleGAN: 7000
     StableDiffusion: 7000
     Midjourney_DALLE: 4000
     LAION: 4000
-
   ai_edited:
     FaceForensics: 6000
     ForgeryNet: 5000
@@ -30,3 +29,11 @@ split_ratios:
   train: 0.8
   val: 0.1
   test: 0.1
+
+# Optional advanced settings for diversity and quality
+per_source_max_fraction: 0.5  # No single source can be >50% of a class
+min_quality_score: 0.7        # Only keep images above this quality (0-1 scale)
+max_total_images: 66000       # Cap total images if needed
+artifacts_dir: artifacts/v1
+export_root: artifacts/v1/exported_dataset
+strict_mode: true
