@@ -69,6 +69,8 @@ def deduplicate_images(index_csv, output_csv, config, logger, dry_run=False):
     with open(input_path, 'r', newline='') as in_f:
         reader = list(csv.DictReader(in_f))
         fieldnames = list(reader[0].keys()) if reader else []
+        if 'phash' not in fieldnames:
+            fieldnames.append('phash')
         conflict_fields = fieldnames + ['conflict_type','conflict_paths','conflict_labels','conflict_hash','winner_path','winner_quality_score','winner_resolution']
         if not dry_run:
             writer = csv.DictWriter(out_f, fieldnames=fieldnames)

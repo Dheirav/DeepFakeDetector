@@ -20,6 +20,17 @@ def compute_md5(file_path, logger, chunk_size=8192):
         logger.error(f"MD5 hash failed for {file_path}: {e}")
         return None
 
+def compute_sha256(file_path, logger, chunk_size=65536):
+    hash_sha256 = hashlib.sha256()
+    try:
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                hash_sha256.update(chunk)
+        return hash_sha256.hexdigest()
+    except Exception as e:
+        logger.error(f"SHA256 hash failed for {file_path}: {e}")
+        return None
+
 
 def index_dataset(source_dirs, output_csv, logger, dry_run=False, project_root=None, class_map=None):
     """
@@ -31,7 +42,7 @@ def index_dataset(source_dirs, output_csv, logger, dry_run=False, project_root=N
         project_root = Path.cwd()
     header = [
         "path", "dataset_source", "class_label", "width", "height", "aspect_ratio",
-        "format", "file_size_bytes", "md5_hash"
+        "format", "file_size_bytes", "md5_hash", "sha256", "quality_score", "phash"
     ]
     output_csv = Path(output_csv)
     if not dry_run:
@@ -48,8 +59,15 @@ def index_dataset(source_dirs, output_csv, logger, dry_run=False, project_root=N
 
     for source_dir in source_dirs:
         source_path = Path(source_dir)
+        if not source_path.is_absolute():
+            source_path = (project_root / source_dir).resolve()
+        else:
+            source_path = source_path.resolve()
         # Normalize dataset_source for portability (relative to project root)
-        dataset_source = str(source_path.relative_to(project_root))
+        try:
+            dataset_source = str(source_path.relative_to(project_root))
+        except ValueError:
+            dataset_source = str(source_path)
         # Handle missing class_map keys explicitly
         if class_map:
             if source_dir in class_map:
@@ -83,6 +101,7 @@ def index_dataset(source_dirs, output_csv, logger, dry_run=False, project_root=N
                 continue
             file_size = fpath.stat().st_size if fpath.exists() else None
             md5 = compute_md5(fpath, logger)
+            sha256 = compute_sha256(fpath, logger)
             row = {
                 "path": rel_path,
                 "dataset_source": dataset_source,
@@ -92,7 +111,10 @@ def index_dataset(source_dirs, output_csv, logger, dry_run=False, project_root=N
                 "aspect_ratio": aspect_ratio,
                 "format": fmt,
                 "file_size_bytes": file_size,
-                "md5_hash": md5
+                "md5_hash": md5,
+                "sha256": sha256,
+                "quality_score": 1.0,
+                "phash": ''
             }
             if not dry_run:
                 writer.writerow(row)

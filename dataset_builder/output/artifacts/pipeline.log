@@ -1,0 +1,8 @@
+[2026-02-13 11:39:48,421] INFO: Pipeline started. Artifacts dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+[2026-02-13 11:39:48,421] INFO: Global random seed set to 42
+[2026-02-13 11:39:48,421] INFO: [1/8] Dataset Indexing...
+[2026-02-13 11:39:48,422] INFO: Indexing data_sources/real/FFHQ as class 'real' and source 'data_sources/real/FFHQ'
+[2026-02-13 11:42:07,353] INFO: Indexing complete. Output: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts/index.csv
+[2026-02-13 11:42:07,356] INFO: Summary: Total scanned: 52001, Indexed: 52001, Skipped: 0
+[2026-02-13 11:42:07,356] INFO: Elapsed time: 138.93 seconds
+[2026-02-13 11:42:07,476] INFO: [2/8] Image Validation...

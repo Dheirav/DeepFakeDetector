@@ -1,132 +1,138 @@
+"""Streamlit frontend app for multi-class deepfake detection.
+
+This UI is a single-page app that accepts image uploads, runs inference
+through the project's PyTorch model (if available), and displays prediction,
+confidence, and a Grad-CAM heatmap overlay. The app is modular and imports
+inference and gradcam utilities from the frontend package.
+"""
+
+from typing import Optional
+import io
+import os
+import sys
+
 import streamlit as st
 from PIL import Image
 
+# When Streamlit runs a script (e.g. `streamlit run frontend/app.py`), the
+# process's import path may be the `frontend` directory itself rather than the
+# project root. Ensure the project root is on `sys.path` so absolute imports
+# like `from frontend import ...` work reliably.
+if __package__ is None:  # running as a script
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
-# -----------------------------
-# Page configuration and layout
-# -----------------------------
-st.set_page_config(
-    page_title="Deepfake Image Detection",
-    layout="wide",
-)
-
-
-def generate_dummy_gradcam(image: Image.Image) -> Image.Image:
-    """
-    Create a simple dummy Grad-CAM style heatmap overlay.
-
-    NOTE: This does NOT use any real model.
-    It just overlays a semi-transparent red layer on top of the image
-    to mimic a Grad-CAM visualization.
-    """
-    # Ensure image has an alpha channel
-    image_rgba = image.convert("RGBA")
-
-    # Create a red semi-transparent overlay
-    heatmap = Image.new("RGBA", image_rgba.size, (255, 0, 0, 120))
-
-    # Blend original image with the red overlay
-    gradcam = Image.alpha_composite(image_rgba, heatmap)
-    return gradcam
+from frontend import config
+from frontend import inference
+from frontend import gradcam as gradcam_module
 
 
-def main() -> None:
-    # -----------------------------
-    # Page title and description
-    # -----------------------------
-    st.title("Deepfake Image Detection (Demo UI)")
-    st.markdown(
-        """
-        This Streamlit app demonstrates a **front-end UI** for a deepfake detection project.
-        
-        - No real model or backend is used here.
-        - Predictions and Grad-CAM are **dummy placeholders** for UI prototyping.
-        """
-    )
+def image_to_bytes(image: Image.Image, fmt: str = "PNG") -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, format=fmt)
+    buf.seek(0)
+    return buf.getvalue()
 
-    st.markdown("---")
 
-    # -----------------------------
-    # File upload section
-    # -----------------------------
-    st.subheader("1. Upload Input Image")
-    uploaded_file = st.file_uploader(
-        "Upload a face image (JPG, JPEG, PNG)",
-        type=["jpg", "jpeg", "png"],
-    )
+def validate_image(uploaded) -> (Optional[Image.Image], Optional[str]):
+    try:
+        img = Image.open(uploaded)
+        img.verify()
+        uploaded.seek(0)
+        img = Image.open(uploaded).convert("RGB")
+        if img.width * img.height > 50_000_000:
+            return None, "Image too large (width*height > 50M pixels)"
+        return img, None
+    except Exception as e:
+        return None, f"Invalid or corrupted image: {e}"
 
-    # Analyze button (disabled until an image is uploaded)
-    analyze_clicked = st.button(
-        "Analyze",
-        type="primary",
-        disabled=uploaded_file is None,
-    )
 
-    # -----------------------------
-    # Main content area
-    # -----------------------------
-    if uploaded_file is not None:
-        # Load the uploaded image using PIL
-        input_image = Image.open(uploaded_file)
+def main():
+    st.set_page_config(page_title="Deepfake Detection", layout="wide")
+    st.title("Deepfake Detection — Upload & Explain")
 
-        # Create two columns: left for input image, right for Grad-CAM
-        col1, col2 = st.columns(2)
+    cols = st.columns([3, 1])
+    with cols[1]:
+        checkpoint_path = st.text_input("Model checkpoint path", value=config.MODEL_CHECKPOINT)
+        use_gpu = st.checkbox("Use GPU if available", value=True)
+        analyze = st.button("Analyze")
 
-        with col1:
-            # -----------------------------
-            # Display original image
-            # -----------------------------
-            st.subheader("2. Input Image")
-            st.image(
-                input_image,
-                caption="Uploaded image",
-                use_container_width=True,
-            )
+    uploaded_file = st.file_uploader("Upload image (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"])
+    if uploaded_file is None:
+        st.info("Upload an image (JPG, PNG, WEBP) to begin.")
+        return
 
-        with col2:
-            # -----------------------------
-            # Display dummy Grad-CAM
-            # -----------------------------
-            st.subheader("3. Grad-CAM Visualization (Dummy)")
-            gradcam_image = generate_dummy_gradcam(input_image)
-            st.image(
-                gradcam_image,
-                caption="Dummy Grad-CAM style heatmap overlay",
-                use_container_width=True,
-            )
+    pil_img, err = validate_image(uploaded_file)
+    if err:
+        st.error(err)
+        return
 
-        st.markdown("---")
+    left, right = st.columns([2, 1])
+    with left:
+        st.image(pil_img, caption="Uploaded image", use_column_width=True)
 
-        # -----------------------------
-        # Prediction results section
-        # -----------------------------
-        st.subheader("4. Prediction Result")
+    # Try to load model (best-effort). If fails, fallback to dummy predictor.
+    model = None
+    cam = None
+    try:
+        device = inference.get_device(use_gpu)
+        model = inference.load_model(checkpoint_path, device=device) if checkpoint_path else None
+        if model is not None:
+            cam = gradcam_module.GradCAM(model)
+    except Exception as e:
+        st.warning(f"Model/Grad-CAM unavailable, using dummy predictor: {e}")
 
-        if analyze_clicked:
-            # Dummy prediction label and confidence
-            prediction_label = "Deepfake (Fake)"
-            confidence = 0.87  # Dummy confidence score
+    if analyze:
+        status = st.empty()
+        status.info("Processing...")
+        try:
+            top, probs = inference.predict(model, pil_img, device=device if 'device' in locals() else None)
+            conf = probs[top]
 
-            # Display prediction in a highlighted box
-            st.success(f"Prediction: **{prediction_label}**")
-            st.write(f"Confidence: **{confidence * 100:.1f}%**")
+            st.subheader("Prediction")
+            st.success(f"{top} — {conf * 100:.1f}%")
 
-            # Academic-style note clarifying that this is a mock result
-            st.caption(
-                "Note: This is a mock prediction for UI demonstration only. "
-                "No real deepfake detection model is running."
-            )
-        else:
-            st.info("Click **Analyze** to see dummy prediction and confidence.")
+            st.subheader("Class probabilities")
+            # show as bar chart of percentages
+            percent = {k: [v * 100] for k, v in probs.items()}
+            st.bar_chart(percent)
 
-    else:
-        # If no file is uploaded, guide the user
-        st.info("Please upload an image to begin the deepfake analysis demo.")
+            st.subheader("Explainability")
+            view = st.radio("View", ["Original", "Heatmap overlay", "Side-by-side"], index=1)
+
+            if model is not None and cam is not None:
+                try:
+                    import numpy as np
+                    # compute tensor and heatmap
+                    tensor = inference.preprocess_image(pil_img)
+                    heatmap = cam(tensor, class_idx=int(list(probs.keys()).index(top)))
+                    overlay = gradcam_module.overlay_heatmap(pil_img, heatmap, alpha=0.5)
+                except Exception as e:
+                    st.warning(f"Grad-CAM generation failed, showing original: {e}")
+                    overlay = pil_img
+            else:
+                # fallback dummy overlay
+                overlay = pil_img
+
+            if view == "Original":
+                st.image(pil_img, use_column_width=True)
+            elif view == "Heatmap overlay":
+                st.image(overlay, use_column_width=True)
+            else:
+                c1, c2 = st.columns(2)
+                c1.image(pil_img, caption="Original")
+                c2.image(overlay, caption="Heatmap overlay")
+
+            st.download_button("Download Heatmap", data=image_to_bytes(overlay), file_name="heatmap.png", mime="image/png")
+            status.success("Prediction complete")
+
+        except Exception as e:
+            st.error(f"Inference failed: {e}")
+        finally:
+            status.empty()
 
 
 if __name__ == "__main__":
-    # -----------------------------
-    # Entry point
-    # -----------------------------
     main()
 

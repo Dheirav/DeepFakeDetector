@@ -16,8 +16,8 @@ import numpy as np
 # Import all pipeline modules (assume they exist and are robust)
 from modules.indexer import index_dataset
 from modules.validator import validate_images
-from modules.deduplicator import deduplicate_index
-from modules.sampler import filter_and_sample
+from modules.deduplicator import deduplicate_images
+from modules.sampler import sample_dataset
 from modules.splitter import split_dataset
 from modules.exporter import export_dataset
 from modules.audit_dataset import audit_dataset
@@ -86,47 +86,44 @@ def run_pipeline(config_path: str, dry_run: bool = False):
     index_csv = artifacts_dir / 'index.csv'
     logger.info("[1/8] Dataset Indexing...")
     if not index_csv.exists() or dry_run:
-        index_dataset(config, str(index_csv), logger, dry_run=dry_run)
+        project_root = Path(config.get('project_root', '.'))
+        source_dirs = config.get('source_dirs', [])
+        class_map = config.get('class_map', {})
+        index_dataset(source_dirs, str(index_csv), logger, dry_run=dry_run, project_root=project_root, class_map=class_map)
     if not dry_run:
         validate_artifact(index_csv, base_fields, stage="Indexing")
     # Stage 2: Validation
     validated_csv = artifacts_dir / 'validated_index.csv'
     logger.info("[2/8] Image Validation...")
     if not validated_csv.exists() or dry_run:
-        validate_images(str(index_csv), config, str(validated_csv), logger, dry_run=dry_run)
+        validate_images(str(index_csv), str(validated_csv), config, logger, dry_run=dry_run)
     if not dry_run:
         validate_artifact(validated_csv, base_fields, stage="Validation")
     # Stage 3: Deduplication
     deduped_csv = artifacts_dir / 'deduped_index.csv'
     logger.info("[3/8] Deduplication...")
     if not deduped_csv.exists() or dry_run:
-        deduplicate_index(str(validated_csv), config, str(deduped_csv), logger, dry_run=dry_run)
+        deduplicate_images(str(validated_csv), str(deduped_csv), config, logger, dry_run=dry_run)
     if not dry_run:
         validate_artifact(deduped_csv, base_fields, stage="Deduplication")
-    # Stage 4: Quality Filtering
-    filtered_csv = artifacts_dir / 'filtered_index.csv'
-    logger.info("[4/8] Quality Filtering...")
-    if not filtered_csv.exists() or dry_run:
-        filter_and_sample(str(deduped_csv), config, str(filtered_csv), logger, dry_run=dry_run)
-    if not dry_run:
-        validate_artifact(filtered_csv, base_fields, stage="Quality Filtering")
-    # Stage 5: Sampling and Class Balancing
+    # Stage 4 & 5: Quality Filtering and Sampling (combined in sample_dataset)
     sampled_csv = artifacts_dir / 'sampled_index.csv'
-    logger.info("[5/8] Sampling and Class Balancing...")
+    logger.info("[4/8] Quality Filtering and Class Balancing...")
     if not sampled_csv.exists() or dry_run:
-        filter_and_sample(str(filtered_csv), config, str(sampled_csv), logger, dry_run=dry_run, balance_classes=True)
+        sample_dataset(str(deduped_csv), str(sampled_csv), config, logger, dry_run=dry_run)
     if not dry_run:
         validate_artifact(sampled_csv, base_fields, stage="Sampling")
-    # Stage 6: Cluster-Based Split
+    # Stage 5: Cluster-Based Split
     split_csv = artifacts_dir / 'split_index.csv'
-    logger.info("[6/8] Cluster-Based Train/Val/Test Split...")
+    split_report_csv = artifacts_dir / 'split_report.csv'
+    logger.info("[5/8] Cluster-Based Train/Val/Test Split...")
     if not split_csv.exists() or dry_run:
-        split_dataset(str(sampled_csv), config, str(split_csv), logger, dry_run=dry_run)
+        split_dataset(str(sampled_csv), str(split_csv), str(split_report_csv), config, logger, dry_run=dry_run)
     if not dry_run:
         validate_artifact(split_csv, split_fields, stage="Split")
-    # Stage 7: Export and Packaging
+    # Stage 6: Export and Packaging
     export_csv = artifacts_dir / 'export_index.csv'
-    logger.info("[7/8] Export and Packaging...")
+    logger.info("[6/8] Export and Packaging...")
     export_root = config.get('export_root', str(artifacts_dir / 'exported_dataset'))
     if not export_csv.exists() or dry_run:
         export_dataset(str(split_csv), export_root, config, logger, dry_run=dry_run)
@@ -144,9 +141,9 @@ def run_pipeline(config_path: str, dry_run: bool = False):
             logger.error(f"Export artifact missing: {export_csv}")
             raise FileNotFoundError(f"Export artifact missing: {export_csv}")
         validate_artifact(export_csv, export_fields, stage="Export")
-    # Stage 8: Audit
+    # Stage 7: Audit
     audit_json = artifacts_dir / 'audit_report.json'
-    logger.info("[8/8] Dataset Integrity Audit...")
+    logger.info("[7/8] Dataset Integrity Audit...")
     audit_dataset(str(export_csv), str(audit_json), config, logger, dry_run=dry_run)
     # Strict mode enforcement
     if not dry_run and config.get('strict_mode', False):

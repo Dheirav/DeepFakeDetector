@@ -1,39 +1,47 @@
 random_seed: 42
 
+project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
+artifacts_dir: output/artifacts
+export_root: data/
+dataset_version: v1
+
+source_dirs:
+  - data_sources/real/FFHQ
+
+class_map:
+  data_sources/real/FFHQ: real
+
 image_rules:
   min_width: 256
   min_height: 256
   target_resolution: 512
   blur_threshold: 80
+  aspect_ratio_min: 0.5
+  aspect_ratio_max: 2.0
+  compression_heuristic: false
+  compression_size_per_pixel: 0.15
 
 class_targets:
-  real:
-    FFHQ: 5000
-    COCO: 6000
-    OpenImages: 5000
-    ImageNet: 4000
-    # Optional: Flickr, Unsplash, DSLR sets can be added here if used
-  ai_generated:
-    StyleGAN: 7000
-    StableDiffusion: 7000
-    Midjourney_DALLE: 4000
-    LAION: 4000
-  ai_edited:
-    FaceForensics: 6000
-    ForgeryNet: 5000
-    CASIA: 4000
-    IMD2020: 4000
-    DEFACTO: 3000
+  real: 5000   # or the number you want in your final dataset
 
 split_ratios:
-  train: 0.8
-  val: 0.1
-  test: 0.1
+  train: 0.7
+  val: 0.15
+  test: 0.15
 
-# Optional advanced settings for diversity and quality
-per_source_max_fraction: 0.5  # No single source can be >50% of a class
-min_quality_score: 0.7        # Only keep images above this quality (0-1 scale)
-max_total_images: 66000       # Cap total images if needed
-artifacts_dir: artifacts/v1
-export_root: artifacts/v1/exported_dataset
+min_quality_score: 0.7
+max_total_images: 5000
+
+per_source_max_fraction: 1.0
+
+phash_hamming_threshold: 8
+phash_bucket_chars: 12
+phash_cluster_threshold: 8
+
 strict_mode: true
+max_missing_pct: 1.0
+max_leakage_allowed: 0
+max_malformed_pct: 1.0
+max_low_quality_pct: 10
+quality_hist_bins: [0, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0]
+anomaly_cap: 1000

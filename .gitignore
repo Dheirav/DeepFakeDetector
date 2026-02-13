@@ -2,11 +2,16 @@ data/real/*
 data/ai_generated/*
 data/ai_edited/*
 !data/**/.gitkeep
+data_sources
+
+venv-linux/
+
 
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .env
+
 
 
 

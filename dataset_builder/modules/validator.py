@@ -5,6 +5,23 @@ import cv2
 from PIL import Image, UnidentifiedImageError
 from tqdm import tqdm
 
+def normalized_quality_score(quality_flags):
+    """Compute normalized quality score from flags"""
+    if not quality_flags or quality_flags == ['ok']:
+        return 1.0
+    # Weighted penalties
+    penalties = {
+        'corrupt': 1.0,
+        'low_resolution': 0.3,
+        'blurry': 0.4,
+        'aspect_ratio_extreme': 0.2,
+        'compressed': 0.1,
+        'opencv_read_failed': 0.5
+    }
+    total_penalty = sum(penalties.get(flag, 0.2) for flag in quality_flags)
+    return max(0.0, 1.0 - min(total_penalty, 1.0))
+
+
 def check_resolution(row, min_width, min_height):
     try:
         width = int(row.get('width', 0))
