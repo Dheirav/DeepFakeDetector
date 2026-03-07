@@ -1,133 +1,117 @@
-# Quick Start Guide - Dataset Pipeline
+# Quick Start Guide
 
-## TL;DR - What You Need to Do
+## Status: ✅ Dataset Built — Ready for Training
 
-### 1. Place Your Images
-Copy downloaded dataset images into these folders:
+The dataset is fully constructed and exported. **No pipeline runs are required to start training.**
+
+---
+
+## Dataset Summary
+
+| Class | Count |
+|---|---|
+| Real | 26,000 |
+| AI Generated | 26,000 |
+| AI Edited | 25,865 |
+| **Total** | **77,865** |
+
+Max class imbalance: **0.52%** (within the ≤2% target)
+
+---
+
+## Dataset Location
 
 ```
-data_sources/
-├── real/FFHQ/              ← FFHQ dataset (5k images)
-├── real/COCO/              ← MS COCO real images (6k images)
-├── real/OpenImages/        ← Open Images (5k images)
-├── real/ImageNet/          ← ImageNet photos (4k images)
-├── ai_generated/StyleGAN/  ← StyleGAN outputs (7k images)
-├── ai_generated/StableDiffusion/ ← Stable Diffusion (7k images)
-├── ai_generated/Midjourney_DALLE/ ← Midjourney/DALL-E (4k images)
-├── ai_generated/LAION/     ← LAION subset (4k images)
-├── ai_edited/FaceForensics/ ← FaceForensics++ (6k images)
-├── ai_edited/ForgeryNet/   ← ForgeryNet (5k images)
-├── ai_edited/CASIA/        ← CASIA tampering (4k images)
-├── ai_edited/IMD2020/      ← IMD2020 (4k images)
-└── ai_edited/DEFACTO/      ← DEFACTO (3k images)
+dataset_builder/
+├── train/
+│   ├── real/          (~10,400 images)
+│   ├── ai_generated/  (~10,400 images)
+│   └── ai_edited/     (~10,346 images)
+├── val/
+│   ├── real/          (~7,800 images)
+│   ├── ai_generated/  (~7,800 images)
+│   └── ai_edited/     (~7,760 images)
+└── test/
+    ├── real/          (~7,800 images)
+    ├── ai_generated/  (~7,800 images)
+    └── ai_edited/     (~7,760 images)
 ```
 
-### 2. Run the Pipeline
+---
+
+## 1. Install Dependencies
 
 ```bash
-cd dataset_builder
-python main.py --config config/dataset_config.yaml --log-level INFO
-```
-
-### 3. Check Output
-
-Final dataset will be in `data/real/`, `data/ai_generated/`, `data/ai_edited/`
-
----
-
-## What's Been Done
-
-✅ **Directory structure created** - All 13 source folders ready  
-✅ **Configuration updated** - `dataset_config.yaml` has all required settings  
-✅ **Pipeline fixed** - Module calls corrected for proper execution  
-✅ **Dependencies installed** - All required packages ready  
-✅ **Documentation created** - Complete setup guide available  
-
----
-
-## What Happens When You Run It
-
-1. **Indexing** - Scans all images in `data_sources/`
-2. **Validation** - Checks quality, resolution, corruption
-3. **Deduplication** - Removes duplicates via perceptual hashing
-4. **Sampling** - Balances classes (22k images each)
-5. **Splitting** - Creates 70/15/15 train/val/test split
-6. **Export** - Copies images to `data/` folder
-7. **Audit** - Generates quality report
-
----
-
-## Key Configuration Settings
-
-```yaml
-class_targets:
-  real: 22000
-  ai_generated: 22000
-  ai_edited: 22000
-
-split_ratios:
-  train: 0.7   # 70% training
-  val: 0.15    # 15% validation
-  test: 0.15   # 15% test
-
-image_rules:
-  min_width: 256
-  min_height: 256
-  blur_threshold: 80
-  min_quality_score: 0.7
+pip install -r requirements.txt
 ```
 
 ---
 
-## Outputs
+## 2. Train a Model
 
-**Artifacts** (in `dataset_builder/output/artifacts/`):
-- `pipeline.log` - Full execution log
-- `audit_report.json` - Quality metrics
-- `export_index.csv` - Final dataset manifest
-
-**Dataset** (in `data/`):
-```
-data/
-├── real/{train,val,test}/
-├── ai_generated/{train,val,test}/
-└── ai_edited/{train,val,test}/
-```
-
----
-
-## Testing Before Full Run
-
-Dry run to test without processing:
+**Baseline (ResNet18, minimal setup):**
 ```bash
-python main.py --config config/dataset_config.yaml --dry-run --log-level DEBUG
+python scripts/training/train_baseline.py \
+    --data_dir dataset_builder \
+    --epochs 20 \
+    --batch_size 32 \
+    --device cuda
 ```
+
+**Advanced (config-driven, TensorBoard, checkpoints):**
+```bash
+python scripts/training/train_full.py --config scripts/training/train_config.yaml
+```
+
+Set `data_dir: dataset_builder` in `train_config.yaml`.
+
+---
+
+## 3. Evaluate
+
+```bash
+python scripts/evaluation/evaluate.py \
+    --model_path models/best_resnet18.pth \
+    --data_dir dataset_builder
+```
+
+---
+
+## 4. Launch the UI
+
+```bash
+streamlit run frontend/app.py
+```
+
+Upload an image to get a prediction and Grad-CAM heatmap.
+
+---
+
+## Hardware Configurations
+
+| Hardware | Batch Size | Workers |
+|---|---|---|
+| Entry-level (integrated GPU, 8GB RAM) | 8–16 | 1 |
+| Mid-range (GTX 1650/3050, 16GB RAM) | 16–32 | 2 |
+| High-end (RTX 4060/4070, 16GB+ RAM) | 64 | 2–4 |
+
+Monitor GPU: `watch -n 1 nvidia-smi`
 
 ---
 
 ## Troubleshooting
 
 | Problem | Solution |
-|---------|----------|
-| No images found | Check images are in correct `data_sources/` folders |
-| Pipeline fails | Check `pipeline.log` for errors |
-| Not enough images | Lower `min_quality_score` or add more sources |
-| Audit fails | Review `audit_report.json` for issues |
+|---|---|
+| `CUDA out of memory` | Reduce `batch_size` |
+| Import errors | Run from project root with venv active |
+| Pipeline audit fails | Check `dataset_builder/output/artifacts/*/pipeline.log` |
 
 ---
 
-## For Full Details
+## References
 
-See **SETUP_INSTRUCTIONS.md** for complete documentation including:
-- Data source download links
-- Detailed configuration options
-- Stage-by-stage pipeline explanation
-- Verification procedures
-
----
-
-## Support
-
-- Pipeline documentation: `dataset_builder/README.md`
-- Dataset design rationale: `DATASET.md`
-- Training guide: `TRAINING_GUIDE.md`
+- Dataset design and sources: [DATASET.md](DATASET.md)
+- Pipeline internals: [dataset_builder/README.md](dataset_builder/README.md)
+- Training guide: [TRAINING_GUIDE.md](TRAINING_GUIDE.md)
+- Full project docs: [README.md](README.md)

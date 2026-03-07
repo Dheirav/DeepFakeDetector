@@ -6,10 +6,10 @@ export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_buil
 dataset_version: v1
 
 source_dirs:
-  - data_sources/real/FFHQ
+  - data_sources/ai_generated/StyleGAN
 
 class_map:
-  data_sources/real/FFHQ: real
+  data_sources/ai_generated/StyleGAN: ai_generated
 
 image_rules:
   min_width: 256
@@ -21,8 +21,11 @@ image_rules:
   compression_heuristic: false
   compression_size_per_pixel: 0.15
 
+# Source: HuggingFace huggan/fake-faces (StyleGAN2 FFHQ-style, 70k images)
+# Download: huggingface-cli download huggan/fake-faces --repo-type dataset
+# Or use NVlabs StyleGAN3 pre-generated sets from their GitHub releases
 class_targets:
-  real: 5000   # or the number you want in your final dataset
+  ai_generated: 2000
 
 split_ratios:
   train: 0.7
@@ -30,14 +33,11 @@ split_ratios:
   test: 0.15
 
 min_quality_score: 0.7
-max_total_images: 5000
-
+max_total_images: 2000
 per_source_max_fraction: 1.0
-
 phash_hamming_threshold: 8
 phash_bucket_chars: 12
 phash_cluster_threshold: 8
-
 strict_mode: true
 max_missing_pct: 1.0
 max_leakage_allowed: 0

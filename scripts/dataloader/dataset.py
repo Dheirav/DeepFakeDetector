@@ -16,10 +16,16 @@ class DeepfakeDataset(Dataset):
 
         for cls in self.label_map:
             cls_path = os.path.join(root_dir, cls)
-            for img in os.listdir(cls_path):
-                self.samples.append(
-                    (os.path.join(cls_path, img), self.label_map[cls])
-                )
+            if not os.path.isdir(cls_path):
+                print(f"[DeepfakeDataset] Warning: class folder not found, skipping: {cls_path}")
+                continue
+            for img in sorted(os.listdir(cls_path)):
+                full_path = os.path.join(cls_path, img)
+                if os.path.isfile(full_path):
+                    self.samples.append((full_path, self.label_map[cls]))
+
+        if not self.samples:
+            raise RuntimeError(f"No samples found in '{root_dir}'. Expected at least one of: {list(self.label_map.keys())}")
 
     def __len__(self):
         return len(self.samples)

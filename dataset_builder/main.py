@@ -36,11 +36,20 @@ def setup_logging(log_level: str = "INFO"):
 
 
 def load_config(config_path: str):
-    # Resolve relative config path from script directory
-    if not os.path.isabs(config_path):
-        config_path = os.path.join(SCRIPT_DIR, config_path)
-    if not os.path.exists(config_path):
-        logging.error(f"Config file not found: {config_path}")
+    # Resolve config path:
+    # 1) if absolute, use it
+    # 2) if relative and exists from cwd, use cwd-relative path
+    # 3) otherwise try relative to the script directory (packaged path)
+    if os.path.isabs(config_path):
+        resolved = config_path
+    else:
+        cwd_candidate = os.path.abspath(config_path)
+        if os.path.exists(cwd_candidate):
+            resolved = cwd_candidate
+        else:
+            resolved = os.path.join(SCRIPT_DIR, config_path)
+    if not os.path.exists(resolved):
+        logging.error(f"Config file not found: {resolved}")
         sys.exit(1)
     with open(config_path, 'r') as f:
         try:
@@ -48,7 +57,7 @@ def load_config(config_path: str):
         except Exception as e:
             logging.error(f"Failed to parse config: {e}")
             sys.exit(1)
-    logging.info(f"Loaded config from {config_path}")
+    logging.info(f"Loaded config from {resolved}")
     return config
 
 
@@ -87,7 +96,9 @@ def log_full_config(config):
 def launch_pipeline(config_path: str, dry_run: bool = False):
     # Call the real orchestrator from pipeline.py
     try:
-        run_pipeline(config_path, dry_run=dry_run)
+        # import here to avoid circular imports at module import time
+        from pipeline import run_pipeline
+        run_pipeline(config_path, dry_run=dry_run, append=False)
     except Exception as e:
         logging.error(f"Pipeline execution failed: {e}")
         sys.exit(1)
@@ -98,6 +109,8 @@ def main():
     parser.add_argument('--config', type=str, default=DEFAULT_CONFIG, help='Path to config YAML file')
     parser.add_argument('--log-level', type=str, default='INFO', help='Logging level (DEBUG, INFO, WARNING, ERROR)')
     parser.add_argument('--dry-run', action='store_true', help='Run pipeline in dry-run mode (no changes made)')
+    parser.add_argument('--append', action='store_true', help='Append/merge new artifacts into existing artifacts instead of skipping')
+    parser.add_argument('--artifacts-dir', type=str, default=None, help='Override artifacts directory for this run')
     args = parser.parse_args()
 
     setup_logging(args.log_level)
@@ -106,11 +119,15 @@ def main():
     if args.dry_run:
         config["dry_run"] = True
         logging.info("Dry run mode enabled.")
+    if args.append:
+        config["append"] = True
+        logging.info("Append/merge mode enabled.")
     log_full_config(config)
     set_random_seed(config.get('random_seed', 42))
     try:
-        # Pass the config path and dry_run to the orchestrator
-        launch_pipeline(args.config, dry_run=args.dry_run)
+        # Pass the config path and dry_run/artifacts override to the orchestrator
+        from pipeline import run_pipeline
+        run_pipeline(args.config, dry_run=args.dry_run, append=args.append, artifacts_dir_override=args.artifacts_dir)
     except KeyboardInterrupt:
         logging.warning("Pipeline interrupted by user (Ctrl+C). Exiting gracefully.")
         sys.exit(130)

@@ -23,25 +23,16 @@ deepfake-project/
 ├── DATASET.md                    # Dataset design specification
 ├── requirements.txt              # Python dependencies
 │
-├── data/                         # Dataset storage
-│   ├── real/
-│   ├── ai_generated/
-│   └── ai_edited/
-│
-├── dataset_builder/              # Production dataset pipeline
+├── dataset_builder/              # Production dataset pipeline — also contains the built dataset
 │   ├── main.py                   # Pipeline orchestrator
 │   ├── pipeline.py               # Pipeline logic
-│   ├── config/
-│   │   └── dataset_config.yaml   # Pipeline configuration
-│   ├── modules/                  # Pipeline modules
-│   │   ├── indexer.py
-│   │   ├── validator.py
-│   │   ├── deduplicator.py
-│   │   ├── sampler.py
-│   │   ├── splitter.py
-│   │   ├── exporter.py
-│   │   └── audit_dataset.py
-│   └── output/                   # Pipeline artifacts
+│   ├── train/                    # Built dataset — train split (~31,146 images)
+│   ├── val/                      # Built dataset — val split (~23,360 images)
+│   ├── test/                     # Built dataset — test split (~23,359 images)
+│   ├── config/                   # Per-source pipeline configs (20 sources)
+│   ├── scripts/                  # Download scripts for each source
+│   ├── modules/                  # Pipeline modules (indexer, validator, deduplicator, …)
+│   └── output/                   # Pipeline artifacts and manifests
 │
 ├── scripts/                      # Training and evaluation scripts
 │   ├── preprocessing/
@@ -83,45 +74,97 @@ deepfake-project/
 pip install -r requirements.txt
 ```
 
-### 2. Build Your Dataset
-Use the **dataset builder pipeline** to sample and construct your dataset from large sources (FFHQ, COCO, StyleGAN, FaceForensics++, etc.):
+### 2. Dataset
 
-```bash
-cd dataset_builder
-python main.py --config config/dataset_config.yaml
-```
+The dataset is fully constructed in `dataset_builder/train/`, `dataset_builder/val/`, and `dataset_builder/test/`.
+See [DATASET.md](DATASET.md) for the full breakdown (77,865 images, 0.52% max class imbalance) and
+[dataset_builder/README.md](dataset_builder/README.md) for pipeline documentation.
 
-See [DATASET.md](DATASET.md) for dataset design specifications and [dataset_builder/README.md](dataset_builder/README.md) for detailed pipeline documentation.
+> **Note:** Dataset images are excluded from git (see `.gitignore`). Model checkpoints and results are also local-only. Re-train using the commands below or download a checkpoint separately.
 
 ### 3. Train a Model
-**Baseline training** (minimal, fast):
+
+**Baseline training** (fast, no extras):
 ```bash
-python scripts/training/train_baseline.py --data_dir data --epochs 10 --batch_size 32
+python scripts/training/train_baseline.py
+# defaults: --data_dir dataset_builder/train  --epochs 5  --batch_size 32
 ```
 
-**Advanced training** (with TensorBoard, checkpoints, config):
+**Full training** (AMP, TensorBoard, Grad-CAM profiling, early stopping):
 ```bash
+python scripts/training/train_full.py
+# defaults: --data_dir dataset_builder/train  --val_dir dataset_builder/val
+# or use a config file:
 python scripts/training/train_full.py --config scripts/training/train_config.yaml
 ```
 
+Checkpoints are saved to `models/<run_id>/`, plots and metrics to `results/<run_id>/`.
+
 ### 4. Evaluate
+
 ```bash
-python scripts/evaluation/evaluate.py --model_path models/best_resnet18.pth --data_dir data
+python scripts/evaluation/evaluate.py \
+  --model_path models/<run_id>/best_resnet18.pth
+# --data_dir defaults to dataset_builder/test
 ```
 
-### 5. Launch UI
+Then plot the confusion matrix:
+```bash
+python scripts/evaluation/plot_confusion_matrix.py
+# reads results/y_true.npy + results/y_pred.npy written by evaluate.py
+```
+
+### 5. Launch the Streamlit UI
+
 ```bash
 streamlit run frontend/app.py
 ```
+
+Workflow:
+1. Upload any JPG / PNG / WEBP image
+2. Click **🔎 Analyse** — classification + confidence bars appear
+3. Explore the Grad-CAM panel (overlay / side-by-side / raw heatmap tabs)
+4. Optionally enable **✂️ Crop** in the sidebar first to focus on a region
+
+### 6. Grad-CAM from the command line
+
+```bash
+python demo_gradcam.py \
+  --model models/<run_id>/best_resnet18.pth \
+  --image path/to/image.jpg \
+  --output_dir results/gradcam
+```
+
+---
+
+## 📈 Baseline Results (ResNet18, 15 epochs, March 2026)
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| Real | 0.7653 | 0.7523 | 0.7588 |
+| AI Generated | 0.9100 | 0.9320 | 0.9209 |
+| AI Edited | 0.8032 | 0.7975 | 0.8004 |
+| **Overall accuracy** | | | **82.73%** |
+
+Evaluated on the held-out test set (23,341 images, balanced across classes).
+The main confusion is Real ↔ AI Edited — 69% of all errors fall on that boundary.
 
 ---
 
 ## 📊 Dataset Builder Pipeline
 
-The `dataset_builder/` module is the **recommended approach** for building your dataset by sampling from large-scale sources.
+The `dataset_builder/` module was used to construct the dataset from 20 source collections.
+**The build is complete** — exports are in `dataset_builder/train/`, `val/`, `test/`.
 
-### Why Use the Dataset Builder?
-- ✅ **Handles multiple large datasets** (FFHQ, COCO, ImageNet, StyleGAN, FaceForensics++, etc.)
+### Built Dataset Stats
+| Class | Count | Sources |
+|---|---|---|
+| Real | 26,000 | FFHQ, COCO, Open Images, COCO Test, Places365 |
+| AI Generated | 26,000 | Synthbuster, SD 1.x, FLUX.1, StyleGAN, MJ/DALL·E + 4 top-up batches |
+| AI Edited | 25,865 | DEFACTO, DEFACTO Inpainting, OpenForensics, FaceForensics++, CASIA, IMD2020 |
+| **Total** | **77,865** | 20 artifact sources, 0.52% max imbalance |
+
+### Pipeline Capabilities
 - ✅ **Automated sampling** with configurable quotas per source
 - ✅ **Deduplication** using perceptual hashing (pHash) to remove near-duplicates
 - ✅ **Quality filtering** based on resolution, blur, and metadata
@@ -140,32 +183,30 @@ The `dataset_builder/` module is the **recommended approach** for building your 
 8. **Audit**: Generate compliance reports and statistics
 
 ### Configuration
-Edit `dataset_builder/config/dataset_config.yaml`:
+Each source has its own config in `dataset_builder/config/`. Example structure:
 
 ```yaml
 random_seed: 42
 artifacts_dir: output/artifacts
-export_root: data/
+export_root: .   # exports directly into dataset_builder/
 
 image_rules:
   min_width: 256
   min_height: 256
-  
+
 class_targets:
-  - real
-  - ai_generated
-  - ai_edited
-  
+  real: 5000   # per-source quota
+
 split_ratios:
   train: 0.7
   val: 0.15
   test: 0.15
 ```
 
-### Running the Pipeline
+### Re-running the Pipeline (if needed)
 ```bash
 cd dataset_builder
-python main.py --config config/dataset_config.yaml [--dry-run] [--log-level INFO]
+python main.py --config config/<source>_config.yaml [--dry-run] [--log-level INFO]
 ```
 
 **Dry-run mode** simulates the pipeline without writing files.
@@ -233,12 +274,7 @@ python scripts/preprocessing/visualize_augmentations.py --image_path data/real/s
 #### Baseline Training (`train_baseline.py`)
 Minimal, research-grade baseline with ResNet18:
 ```bash
-python scripts/training/train_baseline.py \
-    --data_dir data \
-    --epochs 20 \
-    --batch_size 32 \
-    --learning_rate 0.001 \
-    --device cuda
+python scripts/training/train_baseline.py \n    --data_dir dataset_builder \n    --epochs 20 \n    --batch_size 32 \n    --learning_rate 0.001 \n    --device cuda
 ```
 
 **Features:**
@@ -296,7 +332,7 @@ htop
 ```bash
 python scripts/evaluation/evaluate.py \
     --model_path models/best_resnet18.pth \
-    --data_dir data
+    --data_dir dataset_builder
 ```
 
 **Metrics computed:**
@@ -396,10 +432,12 @@ All scripts output logs to:
 3. Ensure label mapping: Real=0, AI Generated=1, AI Edited=2
 
 ### Adding New Datasets
-1. Download and organize source data
-2. Update `dataset_builder/config/dataset_config.yaml`
-3. Run the dataset builder pipeline
-4. Verify output in `data/`
+1. Download source data into `data_sources/<class>/<SourceName>/`
+2. Create a new config in `dataset_builder/config/<source>_config.yaml`
+3. Run: `cd dataset_builder && python main.py --config config/<source>_config.yaml`
+4. Verify output in `dataset_builder/train/`, `val/`, `test/`
+
+**Important:** Always use a fresh `artifacts_dir` subdirectory per source to avoid double-counting during re-runs.
 
 ### Custom Augmentations
 Edit `scripts/preprocessing/preprocessing.py` to add Albumentations transforms.
@@ -531,7 +569,7 @@ project-root/
 
 ## Data Preparation
 - **Folders:**
-  - `data/real/`, `data/ai_generated/`, `data/ai_edited/`
+  - `dataset_builder/train/`, `dataset_builder/val/`, `dataset_builder/test/`
 - **Scripts:**
   - `scripts/data/clean_dataset.py`: Removes corrupted images.
   - `scripts/data/split_data.py`: Splits into train/val sets.
@@ -623,7 +661,7 @@ project-root/
    ```
 2. Train a model:
    ```bash
-   python scripts/training/train_baseline.py --data_dir data --epochs 5
+   python scripts/training/train_baseline.py --data_dir dataset_builder --epochs 5
    # or advanced
    python scripts/training/train_full.py --config scripts/training/train_config.yaml
    ```
@@ -633,7 +671,7 @@ project-root/
    ```
 4. Visualize explainability:
    ```bash
-   python scripts/explainability/grad_cam.py --model_path models/best_resnet18.pth --image_path data/real/example.jpg
+   python scripts/explainability/grad_cam.py --model_path models/best_resnet18.pth --image_path dataset_builder/test/real/example.jpg
    ```
 5. Monitor with TensorBoard:
    ```bash

@@ -1,15 +1,15 @@
 random_seed: 42
 
 project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
-artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts/midjourney_dalle
 export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder
 dataset_version: v1
 
 source_dirs:
-  - data_sources/real/FFHQ
+  - data_sources/ai_generated/Midjourney_DALLE
 
 class_map:
-  data_sources/real/FFHQ: real
+  data_sources/ai_generated/Midjourney_DALLE: ai_generated
 
 image_rules:
   min_width: 256
@@ -21,8 +21,12 @@ image_rules:
   compression_heuristic: false
   compression_size_per_pixel: 0.15
 
+# Source: ehristoforu/midjourney-images (~8.6k Midjourney v5/v6 images)
+#         ehristoforu/dalle-3-images    (~6.6k DALL-E 3 images)
+# Download: python3 dataset_builder/scripts/download_midjourney_dalle.py
+# Files saved as mj_XXXXXX.jpg and dalle_XXXXXX.jpg
 class_targets:
-  real: 5000   # or the number you want in your final dataset
+  ai_generated: 5000
 
 split_ratios:
   train: 0.7
@@ -31,13 +35,10 @@ split_ratios:
 
 min_quality_score: 0.7
 max_total_images: 5000
-
 per_source_max_fraction: 1.0
-
 phash_hamming_threshold: 8
 phash_bucket_chars: 12
 phash_cluster_threshold: 8
-
 strict_mode: true
 max_missing_pct: 1.0
 max_leakage_allowed: 0

@@ -6,7 +6,7 @@ from PIL import Image, UnidentifiedImageError
 from tqdm import tqdm
 import time
 
-SUPPORTED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+SUPPORTED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'}
 
 
 def compute_md5(file_path, logger, chunk_size=8192):

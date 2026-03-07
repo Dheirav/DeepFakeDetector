@@ -1,15 +1,20 @@
 random_seed: 42
 
 project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
-artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts/openforensics
 export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder
 dataset_version: v1
 
+# OpenForensics — ICCV 2021
+# Large-scale multi-face forgery dataset. Covers GAN-based face synthesis
+# (StyleGAN, PGGAN, etc.) with pixel-accurate segmentation masks.
+# Used here as a substitute for ForgeryNet to provide face-manipulation coverage.
+# License: CC BY 4.0  |  https://zenodo.org/records/5528418
 source_dirs:
-  - data_sources/real/FFHQ
+  - data_sources/ai_edited/OpenForensics
 
 class_map:
-  data_sources/real/FFHQ: real
+  data_sources/ai_edited/OpenForensics: ai_edited
 
 image_rules:
   min_width: 256
@@ -22,7 +27,7 @@ image_rules:
   compression_size_per_pixel: 0.15
 
 class_targets:
-  real: 5000   # or the number you want in your final dataset
+  ai_edited: 5000
 
 split_ratios:
   train: 0.7
@@ -31,7 +36,6 @@ split_ratios:
 
 min_quality_score: 0.7
 max_total_images: 5000
-
 per_source_max_fraction: 1.0
 
 phash_hamming_threshold: 8

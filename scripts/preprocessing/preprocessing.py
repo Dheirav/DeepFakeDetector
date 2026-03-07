@@ -6,7 +6,7 @@ train_transform = A.Compose([
     A.HorizontalFlip(p=0.5),
     A.Rotate(limit=15, p=0.5),
     A.RandomBrightnessContrast(p=0.5),
-    A.ImageCompression(quality_lower=30, quality_upper=100, p=0.4),
+    A.ImageCompression(quality_range=(30, 100), p=0.4),
     A.Normalize(),
     ToTensorV2()
 ])

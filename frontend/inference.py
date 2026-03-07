@@ -8,6 +8,7 @@ try:
     import torch
     import torch.nn.functional as F
     from torchvision import models, transforms
+    from torchvision.models import ResNet18_Weights
 except Exception:
     torch = None
 
@@ -30,7 +31,8 @@ def load_model(checkpoint_path: Optional[str] = None, device: Optional[object] =
     if torch is None:
         raise RuntimeError("PyTorch is not available")
     device = device or get_device()
-    model = models.resnet18(pretrained=True)
+    from torchvision.models import ResNet18_Weights
+    model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
     model.fc = torch.nn.Linear(model.fc.in_features, 3)
     model = model.to(device)
 
@@ -44,10 +46,13 @@ def load_model(checkpoint_path: Optional[str] = None, device: Optional[object] =
                 sd = state["model_state"]
             else:
                 sd = state
-            model.load_state_dict(sd, strict=False)
-        except Exception:
-            # best-effort: continue with initialized model
-            pass
+            # torch.compile prefixes every key with "_orig_mod." — strip it so
+            # the compiled checkpoint loads correctly into a plain model.
+            if any(k.startswith("_orig_mod.") for k in sd):
+                sd = {k.replace("_orig_mod.", "", 1): v for k, v in sd.items()}
+            model.load_state_dict(sd, strict=True)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load checkpoint '{checkpoint_path}': {e}")
 
     model.eval()
     return model

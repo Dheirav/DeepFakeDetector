@@ -1,15 +1,21 @@
 random_seed: 42
 
 project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
-artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts/places365
 export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder
 dataset_version: v1
 
+# Places365-Standard validation set
+# 36,500 real scene photographs across 365 indoor/outdoor scene categories.
+# ~50 images per category: airports, beaches, bedrooms, forests, kitchens, streets, etc.
+# Provides maximum scene diversity to complement FFHQ (faces) + COCO (objects) + OpenImages (scenes).
+# License: MIT. No login required.
+# Download: http://data.csail.mit.edu/places/places365/val_256.tar (~2.2 GB)
 source_dirs:
-  - data_sources/real/FFHQ
+  - data_sources/real/Places365
 
 class_map:
-  data_sources/real/FFHQ: real
+  data_sources/real/Places365: real
 
 image_rules:
   min_width: 256
@@ -22,7 +28,7 @@ image_rules:
   compression_size_per_pixel: 0.15
 
 class_targets:
-  real: 5000   # or the number you want in your final dataset
+  real: 3000
 
 split_ratios:
   train: 0.7
@@ -30,8 +36,7 @@ split_ratios:
   test: 0.15
 
 min_quality_score: 0.7
-max_total_images: 5000
-
+max_total_images: 3000
 per_source_max_fraction: 1.0
 
 phash_hamming_threshold: 8

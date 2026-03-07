@@ -1,0 +1,70 @@
+# Synthbuster Dataset Config
+# Source: Zenodo https://zenodo.org/records/10066460 (CC BY-NC-SA 4.0)
+# Size: 12.4 GB (synthbuster.zip), 1,000 images per generator × 9 generators = 9,000 total
+# Generators covered:
+#   - DALL·E 2        (OpenAI)
+#   - DALL·E 3        (OpenAI / ChatGPT)
+#   - Adobe Firefly   (Adobe)
+#   - Midjourney v5   (Midjourney)
+#   - Stable Diffusion 1.3
+#   - Stable Diffusion 1.4
+#   - Stable Diffusion 2.0
+#   - Stable Diffusion XL (SDXL)
+#   - GLIDE            (OpenAI)
+#
+# Download:
+#   wget https://zenodo.org/records/10066460/files/synthbuster.zip
+#   unzip synthbuster.zip
+#   # Flatten all subdirs into data_sources/ai_generated/Synthbuster/
+#   # Each subfolder is named after the generator (e.g. dalle3/, midjourney_v5/)
+#   find synthbuster -name "*.png" | while read f; do
+#     gen=$(basename $(dirname "$f"))
+#     cp "$f" /path/to/data_sources/ai_generated/Synthbuster/${gen}__$(basename "$f")
+#   done
+
+random_seed: 42
+
+project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
+artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder
+dataset_version: v1
+
+source_dirs:
+  - data_sources/ai_generated/Synthbuster
+
+class_map:
+  data_sources/ai_generated/Synthbuster: ai_generated
+
+image_rules:
+  min_width: 256
+  min_height: 256
+  target_resolution: 512
+  blur_threshold: 80
+  aspect_ratio_min: 0.5
+  aspect_ratio_max: 2.0
+  compression_heuristic: false
+  compression_size_per_pixel: 0.15
+
+# Source has 9,000 images across 9 generators. Target 7,000 leaves headroom
+# for the pipeline to discard low-quality images during validation.
+class_targets:
+  ai_generated: 7000
+
+split_ratios:
+  train: 0.7
+  val: 0.15
+  test: 0.15
+
+min_quality_score: 0.7
+max_total_images: 7000
+per_source_max_fraction: 1.0
+phash_hamming_threshold: 8
+phash_bucket_chars: 12
+phash_cluster_threshold: 8
+strict_mode: true
+max_missing_pct: 1.0
+max_leakage_allowed: 0
+max_malformed_pct: 1.0
+max_low_quality_pct: 10
+quality_hist_bins: [0, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0]
+anomaly_cap: 1000

@@ -85,7 +85,8 @@ def main():
     print("\n[4/5] Running inference...")
     try:
         with torch.no_grad():
-            input_batch = input_tensor.unsqueeze(0).to(args.device)
+            # preprocess_image already includes the batch dimension [1,C,H,W]
+            input_batch = input_tensor.to(args.device)
             output = model(input_batch)
             probs = torch.softmax(output, dim=1)[0]
             pred_class = output.argmax(dim=1).item()

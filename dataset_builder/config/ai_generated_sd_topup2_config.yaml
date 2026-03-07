@@ -1,15 +1,17 @@
 random_seed: 42
 
 project_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project
-artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts
+artifacts_dir: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder/output/artifacts/sd_topup2
 export_root: /home/dheirav/Code/Deepfake_Detection/deepfake-project/dataset_builder
 dataset_version: v1
 
+# Second StableDiffusion top-up from DiffusionDB parts 4-6.
+# Fills the 641-image gap left after MJ near-duplicate removal.
 source_dirs:
-  - data_sources/real/FFHQ
+  - data_sources/ai_generated/SD_TopUp2
 
 class_map:
-  data_sources/real/FFHQ: real
+  data_sources/ai_generated/SD_TopUp2: ai_generated
 
 image_rules:
   min_width: 256
@@ -22,7 +24,7 @@ image_rules:
   compression_size_per_pixel: 0.15
 
 class_targets:
-  real: 5000   # or the number you want in your final dataset
+  ai_generated: 641
 
 split_ratios:
   train: 0.7
@@ -30,8 +32,7 @@ split_ratios:
   test: 0.15
 
 min_quality_score: 0.7
-max_total_images: 5000
-
+max_total_images: 641
 per_source_max_fraction: 1.0
 
 phash_hamming_threshold: 8

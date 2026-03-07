@@ -1,18 +1,72 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+.env
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv-linux/
+venv/
+.venv/
+env/
+
+# ── Data sources (raw downloads, not committed) ───────────────────────────────
+data_sources/
 data/real/*
 data/ai_generated/*
 data/ai_edited/*
 !data/**/.gitkeep
-data_sources
 
-venv-linux/
+# ── Built dataset images (large binary files) ────────────────────────────────
+# Dataset is ~77k images — stored locally, not in git.
+# Re-build with: python dataset_builder/main.py
+dataset_builder/train/
+dataset_builder/val/
+dataset_builder/test/
+dataset_builder/data/
 
+# ── Dataset builder generated artifacts (large/auto-generated) ───────────────
+dataset_builder/logs/
+dataset_builder/checksums.csv
+dataset_builder/export_index.csv
+dataset_builder/manifest.json
+# Generated pipeline artifacts — reproducible from source, not stored in git
+dataset_builder/output/artifacts/audit_report.json
+dataset_builder/output/artifacts/conflict_report.csv
+dataset_builder/output/artifacts/deduped_index.csv
+dataset_builder/output/artifacts/export_index.csv
+dataset_builder/output/artifacts/sampled_index.csv
+dataset_builder/output/artifacts/split_index.csv
+dataset_builder/output/artifacts/split_report.csv
+dataset_builder/output/artifacts/pipeline.log
+# Per-source artifact subdirectories (binary indexes, per-image CSVs)
+dataset_builder/output/artifacts/*/
 
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
-.env
+# ── Model checkpoints ─────────────────────────────────────────────────────────
+# Saved with torch.save — can be hundreds of MB each.
+# Download or re-train using instructions in README.md.
+models/
 
+# ── Results / evaluation outputs ─────────────────────────────────────────────
+# Includes profiler traces (many MB), confusion matrix PNGs, metrics CSVs.
+results/
 
+# ── Logs ──────────────────────────────────────────────────────────────────────
+logs/
+*.log
 
+# ── Hugging Face cache ────────────────────────────────────────────────────────
+.hf_cache/
 
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
 

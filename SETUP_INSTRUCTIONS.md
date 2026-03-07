@@ -1,5 +1,10 @@
 # Dataset Pipeline Setup Instructions
 
+> **⚠️ Note:** The dataset has already been built and exported.
+> This document describes the original setup process and is kept for reference.
+> For current dataset stats and re-build instructions see [DATASET.md](DATASET.md) and [dataset_builder/README.md](dataset_builder/README.md).
+> To start training immediately, see [QUICKSTART.md](QUICKSTART.md).
+
 Complete guide to set up and run the deepfake detection dataset builder pipeline.
 
 ---

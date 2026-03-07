@@ -7,6 +7,15 @@ matplotlib
 scikit-learn
 tqdm
 albumentations
+Pillow
 
 tensorboard
 PyYAML
+
+# Streamlit UI + crop widget
+streamlit
+streamlit-cropper
+
+# Optional: GPU/system monitoring during training (train_full.py)
+psutil
+pynvml
