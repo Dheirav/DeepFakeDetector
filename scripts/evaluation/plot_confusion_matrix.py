@@ -1,10 +1,31 @@
 import argparse
 import os
+import re
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import confusion_matrix
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
+
+# Project root = two levels above this script
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+_RESULTS_ROOT = os.path.join(_PROJECT_ROOT, "results")
+
+
+def _latest_run_dir() -> str:
+    """
+    Return the results sub-directory for the most recent run (highest
+    run_YYYYMMDD_HHMMSS folder name), or _RESULTS_ROOT if none exist.
+    """
+    pattern = re.compile(r"^run_\d{8}_\d{6}$")
+    if os.path.isdir(_RESULTS_ROOT):
+        runs = sorted(
+            [d for d in os.listdir(_RESULTS_ROOT) if pattern.match(d)],
+            reverse=True,
+        )
+        if runs:
+            return os.path.join(_RESULTS_ROOT, runs[0])
+    return _RESULTS_ROOT
 
 def plot_cm(y_true, y_pred, save_path="results/confusion_matrix.png"):
     cm = confusion_matrix(y_true, y_pred)
@@ -45,15 +66,29 @@ def plot_cm(y_true, y_pred, save_path="results/confusion_matrix.png"):
     plt.show()
 
 if __name__ == "__main__":
-    # Resolve defaults relative to this script's location so the script works
-    # regardless of which directory it is invoked from.
-    _results_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../results'))
     parser = argparse.ArgumentParser()
-    parser.add_argument('--y_true_path', type=str, default=os.path.join(_results_dir, "y_true.npy"))
-    parser.add_argument('--y_pred_path', type=str, default=os.path.join(_results_dir, "y_pred.npy"))
-    parser.add_argument('--save_path',   type=str, default=os.path.join(_results_dir, "confusion_matrix.png"))
+    parser.add_argument(
+        '--run_dir', type=str, default=None,
+        help=(
+            'Path to a specific run results directory '
+            '(e.g. results/run_20260307_063053). '
+            'Defaults to the most recent run_* folder found in results/.'
+        ),
+    )
+    parser.add_argument('--y_true_path', type=str, default=None)
+    parser.add_argument('--y_pred_path', type=str, default=None)
+    parser.add_argument('--save_path',   type=str, default=None)
     args = parser.parse_args()
-    y_true = np.load(args.y_true_path)
-    y_pred = np.load(args.y_pred_path)
-    plot_cm(y_true, y_pred, save_path=args.save_path)
+
+    # Resolve run directory: explicit flag > latest run folder > results/
+    run_dir = os.path.abspath(args.run_dir) if args.run_dir else _latest_run_dir()
+    print(f"Using run directory: {run_dir}")
+
+    y_true_path = args.y_true_path or os.path.join(run_dir, "y_true.npy")
+    y_pred_path = args.y_pred_path or os.path.join(run_dir, "y_pred.npy")
+    save_path   = args.save_path   or os.path.join(run_dir, "confusion_matrix.png")
+
+    y_true = np.load(y_true_path)
+    y_pred = np.load(y_pred_path)
+    plot_cm(y_true, y_pred, save_path=save_path)
 

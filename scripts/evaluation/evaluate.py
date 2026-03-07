@@ -1,4 +1,5 @@
 import os
+import re
 import argparse
 import numpy as np
 import torch
@@ -14,6 +15,25 @@ from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import val_transform
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
+
+# Project root = two levels above this script (scripts/evaluation/ → root)
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+
+
+def _derive_save_dir(model_path: str) -> str:
+    """
+    Derive the results directory from the model checkpoint path.
+
+    If the path contains a run folder matching run_YYYYMMDD_HHMMSS (e.g.
+    models/run_20260307_063053/best_resnet18.pth), the results are saved to
+    results/run_20260307_063053/ so all artefacts from the same run stay together.
+
+    Falls back to results/ at the project root if no run ID is found.
+    """
+    match = re.search(r"(run_\d{8}_\d{6})", os.path.abspath(model_path))
+    if match:
+        return os.path.join(_PROJECT_ROOT, "results", match.group(1))
+    return os.path.join(_PROJECT_ROOT, "results")
 
 def load_model(model_path, device):
     model = models.resnet18(weights=None)
@@ -66,14 +86,26 @@ def run_evaluation(model_path, data_dir, batch_size=64, save_dir="../results"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate deepfake detection model on test set")
-    parser.add_argument('--model_path',  type=str, required=True, help='Path to model .pth checkpoint')
-    parser.add_argument('--data_dir',    type=str, default="dataset_builder/test", help='Test data directory (with real/, ai_generated/, ai_edited/ subfolders)')
-    parser.add_argument('--batch_size',  type=int, default=64,    help='Batch size')
-    parser.add_argument('--save_dir',    type=str, default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../results'), help='Directory to save predictions')
+    parser.add_argument('--model_path',  type=str, required=True,
+                        help='Path to model .pth checkpoint')
+    parser.add_argument('--data_dir',    type=str, default="dataset_builder/test",
+                        help='Test data directory (with real/, ai_generated/, ai_edited/ subfolders)')
+    parser.add_argument('--batch_size',  type=int, default=64, help='Batch size')
+    parser.add_argument('--save_dir',    type=str, default=None,
+                        help=(
+                            'Directory to save y_true.npy and y_pred.npy. '
+                            'Defaults to results/<run_id>/ derived from --model_path, '
+                            'or results/ if no run ID is found in the checkpoint path.'
+                        ))
     args = parser.parse_args()
+
+    # Auto-derive save_dir from the checkpoint path when not explicitly set.
+    save_dir = os.path.abspath(args.save_dir) if args.save_dir else _derive_save_dir(args.model_path)
+    print(f"Results will be saved to: {save_dir}")
+
     run_evaluation(
         model_path=args.model_path,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
-        save_dir=os.path.abspath(args.save_dir)
+        save_dir=save_dir,
     )
