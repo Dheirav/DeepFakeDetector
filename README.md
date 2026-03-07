@@ -7,11 +7,52 @@ A robust, research-grade pipeline for multi-class deepfake detection using deep 
 ## 🎯 Project Overview
 - **Goal:** Detect and classify images as **Real**, **AI Generated**, or **AI Edited**
 - **Approach:** Modular pipeline with dataset building, preprocessing, training, evaluation, and explainability
-- **Key Features:**
-  - Production-grade dataset builder with deduplication and quality filtering
-  - Research-reproducible training with experiment tracking
-  - Model explainability via Grad-CAM
-  - Interactive Streamlit UI for inference and visualization
+
+### Key Features
+
+#### 🗄️ Dataset Builder
+- Production-grade pipeline across 20 source collections (77,865 images, 0.52% max class imbalance)
+- Perceptual-hash deduplication to remove near-duplicates across sources
+- Quality filtering by resolution, blur score, and format
+- Cluster-based train/val/test splitting — prevents similar images leaking across splits
+- Fully deterministic and reproducible (fixed seeds, locked configs)
+- Audit reports with per-source statistics and compliance checks
+- `DeepfakeDataset` gracefully skips missing class folders with a warning instead of crashing
+
+#### ⚡ Training — `train_full.py` & `train_baseline.py`
+- **cuDNN auto-tuning** (`benchmark=True`) — eliminates ~3,600 redundant `cudaFuncGetAttributes` calls per step, delivering noticeably faster steps on fixed 224×224 inputs
+- **AMP** (Automatic Mixed Precision, `float16` autocast + `GradScaler`) — ~1.5–2× faster conv/matmul on laptop tensor cores with half the memory bandwidth pressure
+- **`torch.compile`** support (PyTorch ≥ 2.0) — fuses element-wise ops and removes redundant kernel launches; detected and enabled at runtime automatically
+- **`persistent_workers=True` + `prefetch_factor=2`** — DataLoader workers survive between epochs (no respawn overhead) and pre-fetch 2 batches ahead so the GPU never idles waiting for data
+- **Worker count 4 → 2** — prevents CPU thermal throttling on laptops where workers compete with the training process
+- **`zero_grad(set_to_none=True)`** — frees gradient memory entirely instead of writing zeros
+- **`non_blocking=True`** tensor transfers — CPU-to-GPU overlap with compute
+- **`ReduceLROnPlateau` scheduler** — halves LR when val loss plateaus, stopping loss oscillation
+- **Early stopping** (`--early_stop_patience`, default 5) — halts training when val acc stagnates
+- **Bug fix:** validation split previously used `train_transform` (augmented); now correctly uses `val_transform`
+- **Bug fix:** default `--data_dir` corrected to `dataset_builder/train` (actual export path)
+- `pretrained=True` → `ResNet18_Weights.DEFAULT` (removes deprecation warning)
+- PyTorch Profiler integration in epoch 1 to surface per-op CPU/CUDA bottlenecks
+
+#### 📊 Evaluation
+- `evaluate.py` — `--data_dir` now optional (defaults to `dataset_builder/test`); `classification_report` only reports classes actually present in the data (no crash on partial splits)
+- `plot_confusion_matrix.py` — default paths fixed to be relative to the script file; dynamic n-class axis rendering so the plot works with 1, 2, or 3 classes
+
+#### 🖥️ Streamlit UI — `frontend/app.py`
+- **`@st.cache_resource` model loader** — model is loaded once per session and reused; no reload on every widget interaction
+- **✂️ Interactive crop panel** — drag-to-crop before analysis using `streamlit-cropper`; supports Free / 1:1 / 4:3 / 16:9 / 3:4 aspect ratios
+- **Grad-CAM tabbed panel** with three views: overlay, side-by-side comparison (original | raw heatmap | overlay), and raw grayscale activation map; each tab has a download button
+- **All-class Grad-CAM expander** — renders heatmaps for all three classes side-by-side in one click
+- **Per-class confidence progress bars** — visual breakdown of all three class probabilities
+- `use_container_width` replaces deprecated `use_column_width` throughout
+- **Bug fix:** double `.unsqueeze(0)` removed — `preprocess_image` already returns `[1,C,H,W]`
+
+#### 🔍 Grad-CAM (`frontend/gradcam.py`, `frontend/inference.py`)
+- `torch.compile` checkpoint compatibility — automatically strips the `_orig_mod.` key prefix that compiled models add, so compiled checkpoints load cleanly
+- `strict=True` loading — weight mismatches now surface as a clear error instead of silently training from a partially-initialized model
+- Auto-detects last Conv2d layer; supports manual `target_layer` override
+- Hook cleanup (`cam.cleanup()`) prevents memory leaks across multiple calls
+- `overlay_heatmap` supports OpenCV (fast, ~2–5 ms) or matplotlib (quality, ~10–20 ms) backends with auto-detection
 
 ---
 
@@ -272,32 +313,39 @@ python scripts/preprocessing/visualize_augmentations.py --image_path data/real/s
 ### Training Scripts
 
 #### Baseline Training (`train_baseline.py`)
-Minimal, research-grade baseline with ResNet18:
+Fast, self-contained training run with all performance optimisations:
 ```bash
-python scripts/training/train_baseline.py \n    --data_dir dataset_builder \n    --epochs 20 \n    --batch_size 32 \n    --learning_rate 0.001 \n    --device cuda
+python scripts/training/train_baseline.py
+# defaults: --data_dir dataset_builder/train  --epochs 5  --batch_size 32
 ```
 
 **Features:**
-- ResNet18 pretrained backbone
-- Validation tracking
-- Best model checkpointing
-- CLI arguments
-- Fixed random seeds
+- ResNet18 pretrained backbone (`ResNet18_Weights.DEFAULT`)
+- AMP (float16 autocast + GradScaler)
+- `torch.compile` (PyTorch ≥ 2.0, auto-detected)
+- `ReduceLROnPlateau` LR scheduler
+- Early stopping (`--early_stop_patience`)
+- cuDNN auto-tuning, persistent DataLoader workers, prefetch
+- Correct val transform (no augmentations on validation)
+- Best model checkpointing, per-epoch console summary
 
 #### Advanced Training (`train_full.py`)
 Full-featured training with experiment tracking:
 ```bash
+python scripts/training/train_full.py
+# or with config:
 python scripts/training/train_full.py --config scripts/training/train_config.yaml
 ```
 
 **Features:**
-- YAML configuration
-- TensorBoard logging
-- Learning rate scheduling
-- Early stopping
-- Checkpoint management
-- Training/validation plots
-- Comprehensive metrics
+- All baseline optimisations (AMP, cuDNN benchmark, compile, persistent workers)
+- YAML config support
+- TensorBoard logging (loss, accuracy, LR, GPU/CPU resource metrics)
+- PyTorch Profiler on epoch 1 — surfaces CPU/CUDA bottlenecks automatically
+- `ReduceLROnPlateau` scheduler + early stopping
+- Per-epoch checkpoint saving + best model tracking
+- F1 macro, per-class F1 logged every epoch
+- Training/validation loss and accuracy curves saved as PNGs
 
 **Monitor with TensorBoard:**
 ```bash
@@ -387,15 +435,20 @@ streamlit run frontend/app.py
 ```
 
 **Features:**
-- Image upload (JPG, PNG, WEBP)
-- Real-time inference with confidence scores
-- Class probability bar chart
-- Grad-CAM heatmap overlay
-- Side-by-side comparison view
-- Downloadable heatmap output
+- Image upload (JPG, PNG, WEBP) with size validation
+- **✂️ Interactive crop panel** — drag-to-crop before analysis (Free / 1:1 / 4:3 / 16:9 / 3:4 aspect ratios); toggle via sidebar
+- Real-time inference with a large prediction badge (🟢 Real / 🔴 AI Generated / 🟠 AI Edited)
+- Per-class confidence progress bars for all three classes
+- **Grad-CAM tabbed panel:**
+  - 🌡️ Overlay tab — heatmap blended onto the image + download button
+  - 📊 Side-by-side comparison tab — original | raw heatmap | overlay in one image
+  - 🗺️ Raw heatmap tab — grayscale activation map
+- **All-class Grad-CAM expander** — renders heatmaps for all three classes side-by-side
+- Sidebar controls: model checkpoint path, GPU toggle, target class, colormap (jet/viridis/hot/plasma), opacity slider
+- Model cached with `@st.cache_resource` — loads once per session
 
 **Configuration:**
-Edit `frontend/config.py` to set default model path and device.
+Edit `frontend/config.py` to set default model path. The default points to the trained checkpoint: `models/run_20260307_063053/best_resnet18.pth`.
 
 ---
 
@@ -461,29 +514,37 @@ Edit `scripts/preprocessing/preprocessing.py` to add Albumentations transforms.
 ### Common Issues
 
 **1. CUDA Out of Memory**
-- Reduce `batch_size` in training config
+- Reduce `--batch_size` (try 16 from 32)
 - Use `torch.cuda.empty_cache()` between runs
 - Monitor with `nvidia-smi`
 
 **2. Import Errors (ModuleNotFoundError)**
-- Ensure you're running from the project root
+- Always run from the project root (`deepfake-project/`)
 - Check that `frontend/__init__.py` exists
-- Verify `sys.path` includes project root
+- Verify `sys.path` includes project root in scripts
 
-**3. Corrupted Images**
-- Run `python scripts/data/clean_dataset.py` to remove corrupted files
-- Check image integrity in dataset builder validation stage
+**3. `FileNotFoundError` on dataset paths**
+- The correct paths are `dataset_builder/train`, `dataset_builder/val`, `dataset_builder/test` — not `data/`
+- All training/evaluation scripts now default to these paths automatically
 
-**4. Slow Training**
-- Increase `num_workers` in dataloader
-- Use `pin_memory=True` for GPU training
-- Enable mixed precision training (FP16)
+**4. Port 8501 already in use (Streamlit)**
+```bash
+kill $(lsof -ti:8501)
+```
 
-**5. Low Accuracy**
-- Increase dataset size (use dataset_builder to sample more)
-- Train for more epochs
-- Try different learning rates
-- Add more augmentations
+**5. Model checkpoint fails to load**
+- If you saved a model with `torch.compile` enabled, the state dict keys are prefixed with `_orig_mod.` — `inference.py` strips this automatically
+- Ensure you pass the full path including the run subfolder: `models/run_<id>/best_resnet18.pth`
+
+**6. Slow Training / CPU thermal throttling**
+- `num_workers` is set to 2 by default for laptop use — don't increase above the number of physical cores
+- `cudnn.benchmark=True` is set — first batch of epoch 1 is slower while cuDNN tunes; subsequent steps are fast
+- `torch.compile` adds a one-time compilation cost on the first forward pass (~30–60 s) — normal behaviour
+
+**7. Low Accuracy**
+- Real ↔ AI Edited confusion accounts for 69% of errors in the baseline — use weighted loss (`CrossEntropyLoss(weight=...)`) to focus on that boundary
+- Try a larger backbone (ResNet50, EfficientNet-B3) for +2–4% F1 on hard classes
+- Add label smoothing: `CrossEntropyLoss(label_smoothing=0.1)`
 
 ---
 
