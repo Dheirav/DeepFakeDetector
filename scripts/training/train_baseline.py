@@ -13,6 +13,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import train_transform, val_transform
+from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
+from training.losses import build_criterion
 from tqdm import tqdm
 
 
@@ -74,10 +76,14 @@ def train(
     checkpoint_dir="models",
     seed=42,
     early_stop_patience=5,
+    loss_type="weighted_focal",
+    use_srm=False,
+    label_smoothing=0.0,
 ):
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device} | Epochs: {epochs} | Batch: {batch_size} | LR: {lr}")
+    print(f"Loss: {loss_type} | SRM: {use_srm} | Label smoothing: {label_smoothing}")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     train_loader, val_loader = get_data_loaders(data_dir, batch_size, val_split, seed)
@@ -85,6 +91,31 @@ def train(
     # Use ResNet18_Weights.DEFAULT instead of the deprecated pretrained=True flag.
     model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
     model.fc = nn.Linear(512, 3)
+
+    # ── SRM Filter Layer ────────────────────────────────────────────────────
+    # When enabled, prepend a fixed high-pass residual layer before ResNet's
+    # first conv.  This gives the network a direct view of manipulation
+    # artefacts (edit boundary noise, blending seam frequencies) that are
+    # suppressed by standard ImageNet normalisation.
+    #
+    # The first conv is replaced with a 6-channel version (3 RGB + 3 residual).
+    # Pretrained RGB weights are preserved; residual weights start at 0.1× so
+    # the model warm-starts from ImageNet features and gradually learns to
+    # weight the residual channels.
+    if use_srm:
+        srm_layer = SRMLayer().to(device)
+        model.conv1 = adapt_conv1_for_srm(model.conv1)
+        # Wrap model so SRM runs as the first operation in forward()
+        class SRMResNet(nn.Module):
+            def __init__(self, srm, backbone):
+                super().__init__()
+                self.srm = srm
+                self.backbone = backbone
+            def forward(self, x):
+                return self.backbone(self.srm(x))
+        model = SRMResNet(srm_layer, model)
+        print("SRM layer enabled (6-channel input: 3 RGB + 3 residuals)")
+
     model.to(device)
 
     # torch.compile fuses element-wise ops and eliminates redundant kernel
@@ -93,7 +124,11 @@ def train(
         model = torch.compile(model)
         print("torch.compile enabled")
 
-    criterion = nn.CrossEntropyLoss()
+    # ── Loss Function ────────────────────────────────────────────────────────
+    # weighted_focal (default): per-class weights [1.5, 1.0, 1.5] + focal
+    # scaling — forces the optimizer to focus on the hard Real/AI Edited
+    # boundary instead of coasting on easy AI Generated examples.
+    criterion = build_criterion(loss_type, device, label_smoothing)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # ReduceLROnPlateau halves LR when val_loss stops improving, preventing
@@ -197,6 +232,23 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint_dir',      type=str,   default="models", help='Checkpoint save directory')
     parser.add_argument('--seed',                type=int,   default=42,       help='Random seed')
     parser.add_argument('--early_stop_patience', type=int,   default=5,        help='Early stopping patience (epochs)')
+    parser.add_argument('--loss', type=str, default='weighted_focal',
+                        choices=['ce', 'weighted', 'focal', 'weighted_focal'],
+                        help=(
+                            'Loss function: '
+                            'ce=standard CrossEntropy (original baseline), '
+                            'weighted=CE with class weights [1.5,1.0,1.5], '
+                            'focal=FocalLoss(gamma=2) no weights, '
+                            'weighted_focal=FocalLoss+weights (recommended)'
+                        ))
+    parser.add_argument('--use_srm', action='store_true',
+                        help=(
+                            'Enable SRM (Steganalysis Rich Model) high-pass filter layer. '
+                            'Extracts 3 manipulation-residual channels and concatenates with RGB '
+                            '(6-channel input). Targets high-frequency artefacts left by AI editing.'
+                        ))
+    parser.add_argument('--label_smoothing', type=float, default=0.0,
+                        help='Label smoothing factor (0.1 is a common default)')
     args = parser.parse_args()
 
     train(
@@ -208,4 +260,7 @@ if __name__ == "__main__":
         checkpoint_dir=args.checkpoint_dir,
         seed=args.seed,
         early_stop_patience=args.early_stop_patience,
+        loss_type=args.loss,
+        use_srm=args.use_srm,
+        label_smoothing=args.label_smoothing,
     )
