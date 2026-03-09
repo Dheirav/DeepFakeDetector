@@ -112,7 +112,8 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 
-def build_criterion(loss_type: str, device: str, label_smoothing: float = 0.0) -> nn.Module:
+def build_criterion(loss_type: str, device: str, label_smoothing: float = 0.0,
+                    class_weights: list = None, gamma: float = 2.0) -> nn.Module:
     """
     Factory function — returns the right loss module for the given loss_type string.
 
@@ -124,11 +125,16 @@ def build_criterion(loss_type: str, device: str, label_smoothing: float = 0.0) -
                    'weighted_focal' — FocalLoss(gamma=2) + class weights [1.5, 1.0, 1.5]
         device:    'cuda' or 'cpu' — weights tensor is moved to device.
         label_smoothing: Applied to all loss types that support it.
+        class_weights: Optional list of 3 floats [w_real, w_ai_gen, w_ai_edit].
+                       Overrides DEFAULT_WEIGHTS when provided.
 
     Returns:
         nn.Module loss callable: loss = criterion(logits, labels)
     """
-    weights = DEFAULT_WEIGHTS.to(device)
+    if class_weights is not None:
+        weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+    else:
+        weights = DEFAULT_WEIGHTS.to(device)
 
     if loss_type == "ce":
         return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
@@ -137,10 +143,10 @@ def build_criterion(loss_type: str, device: str, label_smoothing: float = 0.0) -
         return nn.CrossEntropyLoss(weight=weights, label_smoothing=label_smoothing)
 
     elif loss_type == "focal":
-        return FocalLoss(gamma=2.0, label_smoothing=label_smoothing)
+        return FocalLoss(gamma=gamma, label_smoothing=label_smoothing)
 
     elif loss_type == "weighted_focal":
-        return FocalLoss(gamma=2.0, weight=weights, label_smoothing=label_smoothing)
+        return FocalLoss(gamma=gamma, weight=weights, label_smoothing=label_smoothing)
 
     else:
         raise ValueError(

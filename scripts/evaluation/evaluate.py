@@ -13,6 +13,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import val_transform
+from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
 
@@ -24,21 +25,96 @@ def _derive_save_dir(model_path: str) -> str:
     """
     Derive the results directory from the model checkpoint path.
 
-    If the path contains a run folder matching run_YYYYMMDD_HHMMSS (e.g.
-    models/run_20260307_063053/best_resnet18.pth), the results are saved to
-    results/run_20260307_063053/ so all artefacts from the same run stay together.
-
-    Falls back to results/ at the project root if no run ID is found.
+    Priority:
+    1. If the path contains a timestamped run folder (run_YYYYMMDD_HHMMSS),
+       mirror it under results/ so all artefacts from the same training run
+       stay together (e.g. results/run_20260307_063053/).
+    2. If the model lives inside a named subfolder (e.g. models/my_exp/best.pth),
+       use that folder name (e.g. results/my_exp/).
+    3. Otherwise fall back to results/<checkpoint_stem>/ derived from the
+       filename itself (e.g. models/best_resnet18.pth → results/best_resnet18/).
     """
-    match = re.search(r"(run_\d{8}_\d{6})", os.path.abspath(model_path))
+    abs_path = os.path.abspath(model_path)
+
+    # 1. Timestamped run folder
+    match = re.search(r"(run_\d{8}_\d{6})", abs_path)
     if match:
         return os.path.join(_PROJECT_ROOT, "results", match.group(1))
-    return os.path.join(_PROJECT_ROOT, "results")
+
+    # 2. Named parent folder (anything that isn't the bare models/ root)
+    parent = os.path.basename(os.path.dirname(abs_path))
+    models_root = os.path.basename(
+        os.path.abspath(os.path.join(_PROJECT_ROOT, "models"))
+    )
+    if parent and parent != models_root:
+        return os.path.join(_PROJECT_ROOT, "results", parent)
+
+    # 3. Checkpoint filename stem
+    stem = os.path.splitext(os.path.basename(abs_path))[0]
+    return os.path.join(_PROJECT_ROOT, "results", stem)
+
+def _build_srm_net(device, sequential_fc=False, is_convnext=False):
+    """Reconstruct the SRM-wrapped model used during training."""
+    def make_fc(in_features):
+        if sequential_fc:
+            return nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_features, 3))
+        return nn.Linear(in_features, 3)
+
+    if is_convnext:
+        from torchvision.models import ConvNeXt_Tiny_Weights
+        backbone = models.convnext_tiny(weights=None)
+        backbone.classifier[2] = make_fc(backbone.classifier[2].in_features)
+        srm_layer = SRMLayer().to(device)
+        backbone.features[0][0] = adapt_conv1_for_srm(backbone.features[0][0])
+    else:
+        backbone = models.resnet18(weights=None)
+        backbone.fc = make_fc(512)
+        srm_layer = SRMLayer().to(device)
+        backbone.conv1 = adapt_conv1_for_srm(backbone.conv1)
+
+    class SRMNet(nn.Module):
+        def __init__(self, srm, bb):
+            super().__init__()
+            self.srm = srm
+            self.backbone = bb
+        def forward(self, x):
+            return self.backbone(self.srm(x))
+
+    return SRMNet(srm_layer, backbone)
+
 
 def load_model(model_path, device):
-    model = models.resnet18(weights=None)
-    model.fc = nn.Linear(512, 3)
-    model.load_state_dict(torch.load(model_path, map_location=device))
+    raw_sd = torch.load(model_path, map_location=device)
+
+    # torch.compile wraps every key with "_orig_mod." — strip it.
+    if any(k.startswith("_orig_mod.") for k in raw_sd):
+        raw_sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}
+
+    # Detect architecture from state dict keys
+    has_srm      = any(k.startswith("backbone.") for k in raw_sd)
+    is_convnext  = any(k.startswith("backbone.features.") for k in raw_sd)
+    # Detect Sequential FC head: key ends with "fc.1.weight" (ResNet) or "classifier.2.1.weight" (ConvNeXt)
+    sequential_fc = any(k.endswith("fc.1.weight") or k.endswith("classifier.2.1.weight") for k in raw_sd)
+
+    if has_srm:
+        arch = "ConvNeXt-Tiny" if is_convnext else "ResNet-18"
+        fc_label = "Sequential(Dropout+Linear)" if sequential_fc else "Linear"
+        print(f"Detected SRM checkpoint — rebuilding SRMNet ({arch}, FC: {fc_label}).")
+        model = _build_srm_net(device, sequential_fc=sequential_fc, is_convnext=is_convnext)
+    elif is_convnext or any(k.startswith("features.") for k in raw_sd):
+        from torchvision.models import ConvNeXt_Tiny_Weights
+        print("Detected plain ConvNeXt-Tiny checkpoint.")
+        model = models.convnext_tiny(weights=None)
+        in_feat = model.classifier[2].in_features
+        model.classifier[2] = nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3)) if sequential_fc else nn.Linear(in_feat, 3)
+    else:
+        model = models.resnet18(weights=None)
+        if sequential_fc:
+            model.fc = nn.Sequential(nn.Dropout(p=0.0), nn.Linear(512, 3))
+        else:
+            model.fc = nn.Linear(512, 3)
+
+    model.load_state_dict(raw_sd)
     model.to(device)
     model.eval()
     return model

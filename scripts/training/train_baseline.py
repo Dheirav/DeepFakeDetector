@@ -1,4 +1,6 @@
 
+import csv
+import json
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -8,8 +10,11 @@ import os
 import sys
 import random
 import numpy as np
+import matplotlib.pyplot as plt
+from datetime import datetime
 from torch.utils.data import DataLoader, random_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from sklearn.metrics import f1_score
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import train_transform, val_transform
@@ -74,17 +79,28 @@ def train(
     lr=1e-4,
     val_split=0.2,
     checkpoint_dir="models",
+    plot_dir="results",
     seed=42,
     early_stop_patience=5,
     loss_type="weighted_focal",
     use_srm=False,
     label_smoothing=0.0,
+    run_name=None,
 ):
+    # Create a timestamped run subfolder so each run is self-contained
+    run_id = run_name if run_name else datetime.now().strftime("run_%Y%m%d_%H%M%S")
+    checkpoint_dir = os.path.join(checkpoint_dir, run_id)
+    plot_dir       = os.path.join(plot_dir, run_id)
+    print(f"Run ID: {run_id}")
+    print(f"  Checkpoints -> {checkpoint_dir}")
+    print(f"  Plots/logs  -> {plot_dir}")
+
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device} | Epochs: {epochs} | Batch: {batch_size} | LR: {lr}")
     print(f"Loss: {loss_type} | SRM: {use_srm} | Label smoothing: {label_smoothing}")
     os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(plot_dir, exist_ok=True)
 
     train_loader, val_loader = get_data_loaders(data_dir, batch_size, val_split, seed)
 
@@ -134,18 +150,27 @@ def train(
     # ReduceLROnPlateau halves LR when val_loss stops improving, preventing
     # the optimizer from overshooting and oscillating at the bottom of the loss
     # landscape — removes wasted epochs running at too high a LR.
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
     # AMP GradScaler: enables float16 CUDA kernels for conv/matmul ops.
     # Roughly halves memory bandwidth pressure and doubles throughput on the
     # tensor cores present in most NVIDIA laptop GPUs (Turing+).
     # Falls back gracefully to no-op on CPU.
-    scaler = torch.cuda.amp.GradScaler(enabled=(device == "cuda"))
+    scaler = torch.amp.GradScaler('cuda', enabled=(device == "cuda"))
 
     best_val_acc  = 0.0
     best_val_loss = float("inf")
     epochs_no_improve = 0
     best_model_path = os.path.join(checkpoint_dir, "best_baseline_resnet18.pth")
+    train_losses, val_losses = [], []
+    train_accs, val_accs = [], []
+
+    # Open CSV for per-epoch metrics
+    metrics_csv_path = os.path.join(plot_dir, "metrics.csv")
+    metrics_csv_file = open(metrics_csv_path, 'w', newline='')
+    metrics_writer = csv.writer(metrics_csv_file)
+    metrics_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
+                              'val_f1_macro', 'f1_real', 'f1_ai_gen', 'f1_ai_edit'])
 
     for epoch in range(epochs):
         # ── Training ────────────────────────────────────────────────────────
@@ -160,7 +185,7 @@ def train(
             # filling them with zeros — cheaper on memory bandwidth.
             optimizer.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+            with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                 outputs = model(images)
                 loss    = criterion(outputs, labels)
 
@@ -182,29 +207,51 @@ def train(
         model.eval()
         val_loss_sum = 0.0
         val_correct, val_total = 0, 0
+        val_all_preds, val_all_labels = [], []
         with torch.no_grad():
             for images, labels in val_loader:
                 images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-                with torch.cuda.amp.autocast(enabled=(device == "cuda")):
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                     outputs = model(images)
                     loss    = criterion(outputs, labels)
                 val_loss_sum += loss.item() * images.size(0)
                 _, preds = torch.max(outputs, 1)
                 val_correct += (preds == labels).sum().item()
                 val_total   += labels.size(0)
+                val_all_preds.extend(preds.cpu().numpy())
+                val_all_labels.extend(labels.cpu().numpy())
 
         val_loss = val_loss_sum / val_total
         val_acc  = val_correct  / val_total
+        val_f1_macro    = f1_score(val_all_labels, val_all_preds, average='macro')
+        val_f1_per_class = f1_score(val_all_labels, val_all_preds, average=None, labels=[0, 1, 2])
+
+        train_losses.append(train_loss)
+        train_accs.append(train_acc)
+        val_losses.append(val_loss)
+        val_accs.append(val_acc)
 
         print(
             f"Epoch {epoch+1}/{epochs} | "
             f"Train Loss={train_loss:.4f} Acc={train_acc:.4f} | "
-            f"Val Loss={val_loss:.4f} Acc={val_acc:.4f} | "
+            f"Val Loss={val_loss:.4f} Acc={val_acc:.4f} F1={val_f1_macro:.4f} | "
             f"LR={optimizer.param_groups[0]['lr']:.2e}"
         )
 
         # Step scheduler on val loss so LR drops when the model plateaus.
         scheduler.step(val_loss)
+
+        # Log to CSV
+        metrics_writer.writerow([
+            epoch + 1,
+            round(train_loss, 6), round(train_acc, 6),
+            round(val_loss, 6), round(val_acc, 6),
+            round(val_f1_macro, 6),
+            round(float(val_f1_per_class[0]), 6),
+            round(float(val_f1_per_class[1]), 6),
+            round(float(val_f1_per_class[2]), 6),
+        ])
+        metrics_csv_file.flush()
 
         # ── Checkpoint ──────────────────────────────────────────────────────
         if val_acc > best_val_acc:
@@ -212,13 +259,50 @@ def train(
             best_val_loss = val_loss
             epochs_no_improve = 0
             torch.save(model.state_dict(), best_model_path)
-            print(f"  ✓ Best model saved (val_acc={val_acc:.4f})")
+            print(f"  ✓ Best model saved (val_acc={val_acc:.4f}, val_f1={val_f1_macro:.4f})")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= early_stop_patience:
                 print(f"Early stopping triggered after {epoch+1} epochs (no improvement for {early_stop_patience} epochs).")
                 break
 
+    metrics_csv_file.close()
+    print(f"Per-epoch metrics saved to: {metrics_csv_path}")
+
+    # ── Plots ────────────────────────────────────────────────────────────────
+    actual_epochs = len(train_losses)
+    plt.figure()
+    plt.plot(range(1, actual_epochs + 1), train_losses, label="Train Loss")
+    plt.plot(range(1, actual_epochs + 1), val_losses,   label="Val Loss")
+    plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.legend(); plt.title("Loss Curve")
+    plt.savefig(os.path.join(plot_dir, "loss_curve.png"))
+    plt.close()
+
+    plt.figure()
+    plt.plot(range(1, actual_epochs + 1), train_accs, label="Train Acc")
+    plt.plot(range(1, actual_epochs + 1), val_accs,   label="Val Acc")
+    plt.xlabel("Epoch"); plt.ylabel("Accuracy"); plt.legend(); plt.title("Accuracy Curve")
+    plt.savefig(os.path.join(plot_dir, "accuracy_curve.png"))
+    plt.close()
+
+    # ── Training summary JSON ────────────────────────────────────────────────
+    summary = {
+        "run_id": run_id,
+        "best_val_acc":    round(float(best_val_acc), 4),
+        "best_val_loss":   round(float(best_val_loss), 4),
+        "epochs_trained":  actual_epochs,
+        "final_train_acc": round(float(train_accs[-1]), 4),
+        "final_val_acc":   round(float(val_accs[-1]), 4),
+        "config": {
+            "epochs": epochs, "batch_size": batch_size, "lr": lr,
+            "loss_type": loss_type, "use_srm": use_srm,
+            "label_smoothing": label_smoothing, "seed": seed,
+        },
+    }
+    summary_path = os.path.join(plot_dir, "training_summary.json")
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"Training summary saved to: {summary_path}")
     print(f"Training complete. Best val acc: {best_val_acc:.4f}. Model: {best_model_path}")
 
 
@@ -249,6 +333,11 @@ if __name__ == "__main__":
                         ))
     parser.add_argument('--label_smoothing', type=float, default=0.0,
                         help='Label smoothing factor (0.1 is a common default)')
+    parser.add_argument('--plot_dir', type=str, default='results',
+                        help='Directory to save plots and logs')
+    parser.add_argument('--run_name', type=str, default=None,
+                        help='Optional name for this run (subfolder, e.g. "exp1_srm"). '
+                             'Defaults to a timestamp like run_20260307_153045.')
     args = parser.parse_args()
 
     train(
@@ -258,9 +347,11 @@ if __name__ == "__main__":
         lr=args.lr,
         val_split=args.val_split,
         checkpoint_dir=args.checkpoint_dir,
+        plot_dir=args.plot_dir,
         seed=args.seed,
         early_stop_patience=args.early_stop_patience,
         loss_type=args.loss,
         use_srm=args.use_srm,
         label_smoothing=args.label_smoothing,
+        run_name=args.run_name,
     )

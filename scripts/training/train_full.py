@@ -15,10 +15,17 @@ import torch
 import torch.nn as nn
 import torch.profiler
 import torchvision.models as models
-from torchvision.models import ResNet18_Weights
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet50_Weights,
+    ConvNeXt_Tiny_Weights,
+    ConvNeXt_Small_Weights,
+    EfficientNet_B3_Weights,
+    ViT_B_16_Weights
+)
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, random_split
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
@@ -42,18 +49,47 @@ except ImportError:
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
-from preprocessing.preprocessing import train_transform, val_transform
+from preprocessing.preprocessing import train_transform, val_transform, get_train_transform
+from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
+from training.losses import build_criterion
 
-def get_data_loaders(train_dir, batch_size, val_dir=None, val_split=0.2, seed=42, light_augment=False):
-    if light_augment:
-        t_transform = A.Compose([
-            A.Resize(224, 224),
-            A.HorizontalFlip(p=0.5),
-            A.Normalize(),
-            ToTensorV2()
-        ])
+def _build_backbone(backbone_name, num_classes, dropout_p):
+    """Build a pretrained backbone with a custom classification head."""
+    def make_head(in_features):
+        if dropout_p > 0:
+            return nn.Sequential(nn.Dropout(p=dropout_p), nn.Linear(in_features, num_classes))
+        return nn.Linear(in_features, num_classes)
+
+    if backbone_name == "resnet18":
+        m = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+        m.fc = make_head(m.fc.in_features)  # 512 → num_classes
+        return m
+    elif backbone_name == "convnext_tiny":
+        m = models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+        m.classifier[2] = make_head(m.classifier[2].in_features)  # 768 → num_classes
+        return m
+    elif backbone_name == "resnet50":
+        m = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+        m.fc = make_head(m.fc.in_features)  # 2048 → num_classes
+        return m
+    elif backbone_name == "convnext_small":
+        m = models.convnext_small(weights=ConvNeXt_Small_Weights.DEFAULT)
+        m.classifier[2] = make_head(m.classifier[2].in_features)  # 768 → num_classes
+        return m
+    elif backbone_name == "efficientnet_b3":
+        m = models.efficientnet_b3(weights=EfficientNet_B3_Weights.DEFAULT)
+        m.classifier[1] = make_head(m.classifier[1].in_features)  # 1536 → num_classes
+        return m
+    elif backbone_name == "vit_b_16":
+        m = models.vit_b_16(weights=ViT_B_16_Weights.DEFAULT)
+        m.heads.head = make_head(m.heads.head.in_features)  # 768 → num_classes
+        return m
     else:
-        t_transform = train_transform
+        raise ValueError(f"Unsupported backbone '{backbone_name}'. Choose: resnet18, convnext_tiny")
+
+
+def get_data_loaders(train_dir, batch_size, val_dir=None, val_split=0.2, seed=42, augment="standard"):
+    t_transform = get_train_transform(augment)
 
     train_dataset = DeepfakeDataset(train_dir, transform=t_transform)
 
@@ -101,17 +137,29 @@ def set_seed(seed=42):
 def train(
     data_dir="dataset_builder/train",
     val_dir="dataset_builder/val",
-    epochs=10,
-    batch_size=32,
+    epochs=50,
+    batch_size=64,
     lr=1e-4,
     optimizer_name="adam",
+    weight_decay=1e-4,
     val_split=0.2,
     checkpoint_dir="models",
     plot_dir="results",
     seed=42,
     config_path=None,
-    light_augment=False,
+    light_augment=False,  # kept for YAML backward compat — prefer augment=
+    augment="standard",
     run_name=None,
+    use_srm=False,
+    loss_type="weighted_focal",
+    label_smoothing=0.1,
+    early_stop_patience=7,
+    enable_profiler=False,
+    class_weights=None,
+    dropout_p=0.4,
+    lr_schedule="cosine",
+    backbone="resnet18",
+    focal_gamma=2.0,
 ):
     # Load config if provided (single read)
     if config_path:
@@ -123,14 +171,29 @@ def train(
         batch_size     = config.get('batch_size', batch_size)
         lr             = config.get('lr', lr)
         optimizer_name = config.get('optimizer', optimizer_name)
+        weight_decay   = config.get('weight_decay', weight_decay)
         val_split      = config.get('val_split', val_split)
         checkpoint_dir = config.get('checkpoint_dir', checkpoint_dir)
         plot_dir       = config.get('plot_dir', plot_dir)
         seed           = config.get('seed', seed)
         light_augment  = config.get('light_augment', light_augment)
+        augment        = config.get('augment', augment)
         run_name       = config.get('run_name', run_name)
+        use_srm        = config.get('use_srm', use_srm)
+        loss_type      = config.get('loss_type', loss_type)
+        label_smoothing = config.get('label_smoothing', label_smoothing)
+        early_stop_patience = config.get('early_stop_patience', early_stop_patience)
+        enable_profiler  = config.get('enable_profiler', enable_profiler)
+        class_weights    = config.get('class_weights', class_weights)
+        dropout_p        = config.get('dropout_p', dropout_p)
+        lr_schedule      = config.get('lr_schedule', lr_schedule)
+        focal_gamma      = config.get('focal_gamma', focal_gamma)
+        backbone         = config.get('backbone', backbone)
 
-    # Create a timestamped run subfolder so each run is self-contained
+    # light_augment flag is a legacy alias — map it into the augment string
+    if light_augment:
+        augment = "light"
+
     run_id = run_name if run_name else datetime.now().strftime("run_%Y%m%d_%H%M%S")
     checkpoint_dir = os.path.join(checkpoint_dir, run_id)
     plot_dir       = os.path.join(plot_dir, run_id)
@@ -141,11 +204,13 @@ def train(
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device} | Epochs: {epochs} | Batch: {batch_size} | LR: {lr}")
+    print(f"Loss: {loss_type} | SRM: {use_srm} | Label smoothing: {label_smoothing} | WD: {weight_decay}")
+    print(f"Class weights: {class_weights if class_weights else '[1.5, 1.0, 1.5] (default)'}")
+    print(f"Backbone: {backbone} | Dropout (FC head): {dropout_p} | LR schedule: {lr_schedule} | Focal gamma: {focal_gamma} | Augment: {augment}")
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(plot_dir, exist_ok=True)
 
     # Early stopping state
-    early_stop_patience = 5
     epochs_no_improve   = 0
 
     # Initialize GPU monitoring if available
@@ -161,25 +226,49 @@ def train(
         val_dir=val_dir,
         val_split=val_split,
         seed=seed,
-        light_augment=light_augment
+        augment=augment
     )
 
-    model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-    model.fc = nn.Linear(512, 3)
+    model = _build_backbone(backbone, num_classes=3, dropout_p=dropout_p)
+
+    # ── SRM Filter Layer ──────────────────────────────────────────────────
+    if use_srm:
+        srm_layer = SRMLayer().to(device)
+        if backbone == "resnet18":
+            model.conv1 = adapt_conv1_for_srm(model.conv1)
+        elif backbone == "convnext_tiny":
+            model.features[0][0] = adapt_conv1_for_srm(model.features[0][0])
+        class SRMNet(nn.Module):
+            def __init__(self, srm, bb):
+                super().__init__()
+                self.srm = srm
+                self.backbone = bb
+            def forward(self, x):
+                return self.backbone(self.srm(x))
+        model = SRMNet(srm_layer, model)
+        print(f"SRM layer enabled on {backbone} (6-channel input: 3 RGB + 3 residuals)")
+
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    if hasattr(torch, "compile"):
+        model = torch.compile(model)
+        print("torch.compile enabled")
+
+    criterion = build_criterion(loss_type, device, label_smoothing, class_weights, gamma=focal_gamma)
     if optimizer_name.lower() == "adam":
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     elif optimizer_name.lower() == "sgd":
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
     else:
         raise ValueError("Unsupported optimizer. Use 'adam' or 'sgd'.")
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
+    if lr_schedule == "cosine":
+        scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2)
+    else:
+        scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
     best_val_acc = 0.0
-    best_model_path = os.path.join(checkpoint_dir, "best_resnet18.pth")
+    best_model_path = os.path.join(checkpoint_dir, "best_model.pth")
     train_losses, val_losses = [], []
     train_accs, val_accs = [], []
 
@@ -191,7 +280,7 @@ def train(
     metrics_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
                               'val_f1_macro', 'f1_real', 'f1_ai_gen', 'f1_ai_edit'])
 
-    scaler = torch.cuda.amp.GradScaler() if device == "cuda" else None
+    scaler = torch.amp.GradScaler('cuda', enabled=(device == "cuda"))
     for epoch in range(epochs):
         model.train()
         running_loss = 0
@@ -214,7 +303,7 @@ def train(
         for k, v in sys_stats.items():
             writer.add_scalar(f"Resource/{k}", v, epoch+1)
 
-        if epoch == 0:
+        if epoch == 0 and enable_profiler:
             with torch.profiler.profile(
                 schedule=torch.profiler.schedule(wait=0, warmup=1, active=2, repeat=0),
                 on_trace_ready=torch.profiler.tensorboard_trace_handler(os.path.join(plot_dir, "profiler")),
@@ -223,20 +312,14 @@ def train(
                 with_stack=True
             ) as prof:
                 for images, labels in loop:
-                    images, labels = images.to(device), labels.to(device)
-                    optimizer.zero_grad()
-                    if scaler:
-                        with torch.cuda.amp.autocast():
-                            outputs = model(images)
-                            loss = criterion(outputs, labels)
-                        scaler.scale(loss).backward()
-                        scaler.step(optimizer)
-                        scaler.update()
-                    else:
+                    images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                    optimizer.zero_grad(set_to_none=True)
+                    with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                         outputs = model(images)
                         loss = criterion(outputs, labels)
-                        loss.backward()
-                        optimizer.step()
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
                     running_loss += loss.item() * images.size(0)
                     _, preds = torch.max(outputs, 1)
                     correct += (preds == labels).sum().item()
@@ -246,20 +329,14 @@ def train(
             print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
         else:
             for images, labels in loop:
-                images, labels = images.to(device), labels.to(device)
-                optimizer.zero_grad()
-                if scaler:
-                    with torch.cuda.amp.autocast():
-                        outputs = model(images)
-                        loss = criterion(outputs, labels)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
+                images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                optimizer.zero_grad(set_to_none=True)
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                     outputs = model(images)
                     loss = criterion(outputs, labels)
-                    loss.backward()
-                    optimizer.step()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 running_loss += loss.item() * images.size(0)
                 _, preds = torch.max(outputs, 1)
                 correct += (preds == labels).sum().item()
@@ -278,12 +355,8 @@ def train(
         val_all_preds, val_all_labels = [], []
         with torch.no_grad():
             for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                if scaler:
-                    with torch.cuda.amp.autocast():
-                        outputs = model(images)
-                        loss = criterion(outputs, labels)
-                else:
+                images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                     outputs = model(images)
                     loss = criterion(outputs, labels)
                 val_loss += loss.item() * images.size(0)
@@ -305,7 +378,10 @@ def train(
         writer.add_scalar('F1/ai_generated',  val_f1_per_class[1], epoch+1)
         writer.add_scalar('F1/ai_edited',     val_f1_per_class[2], epoch+1)
 
-        scheduler.step(val_loss)
+        if lr_schedule == "cosine":
+            scheduler.step()
+        else:
+            scheduler.step(val_loss)
 
         print(f"Epoch {epoch+1}: Train Loss={train_loss:.4f}, Train Acc={train_acc:.4f} | "
               f"Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}, Val F1={val_f1_macro:.4f} "
@@ -323,10 +399,10 @@ def train(
         ])
         metrics_csv_file.flush()
 
-        # Save checkpoint, keep only last 3 to save disk
-        checkpoint_path = os.path.join(checkpoint_dir, f"resnet18_epoch{epoch+1}.pth")
+        # Save checkpoint, keep only last checkpoint_path = os.path.join(checkpoint_dir, f"resnet18_epoch{epoch+1}.pth")3 to save disk
+        
         torch.save(model.state_dict(), checkpoint_path)
-        old_ckpt = os.path.join(checkpoint_dir, f"resnet18_epoch{epoch-2}.pth")
+        old_ckpt = os.path.join(checkpoint_dir,f"{backbone}_epoch{epoch+1}.pth")
         if os.path.exists(old_ckpt):
             os.remove(old_ckpt)
 
@@ -378,7 +454,12 @@ def train(
         "final_val_acc":  round(float(val_accs[-1]), 4),
         "config": {
             "epochs": epochs, "batch_size": batch_size,
-            "lr": lr, "optimizer": optimizer_name, "seed": seed
+            "lr": lr, "optimizer": optimizer_name, "weight_decay": weight_decay,
+            "loss_type": loss_type, "use_srm": use_srm,
+            "label_smoothing": label_smoothing, "seed": seed,
+            "class_weights": class_weights if class_weights else [1.5, 1.0, 1.5],
+            "dropout_p": dropout_p, "lr_schedule": lr_schedule, "backbone": backbone,
+            "focal_gamma": focal_gamma, "augment": augment,
         }
     }
     summary_path = os.path.join(plot_dir, "training_summary.json")
@@ -391,8 +472,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train ResNet18 for Deepfake Detection")
     parser.add_argument('--data_dir', type=str, default="dataset_builder/train", help='Training data directory')
     parser.add_argument('--val_dir', type=str, default="dataset_builder/val", help='Validation data directory (optional, uses val_split if not set)')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=50, help='Number of epochs')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--optimizer', type=str, default="adam", help='Optimizer: adam or sgd')
     parser.add_argument('--val_split', type=float, default=0.2, help='Validation split ratio (ignored if --val_dir set)')
@@ -400,10 +481,43 @@ if __name__ == "__main__":
     parser.add_argument('--plot_dir', type=str, default="results", help='Directory to save plots')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--config', type=str, default=None, help='Path to YAML config file')
-    parser.add_argument('--light_augment', action='store_true', help='Use only essential augmentations for faster training')
+    parser.add_argument('--light_augment', action='store_true',
+                        help='[Legacy] Alias for --augment light')
+    parser.add_argument('--augment', type=str, default='standard',
+                        choices=['light', 'standard', 'strong'],
+                        help='Augmentation level: light (flip only), standard (default), '
+                             'strong (wider JPEG + noise + blur, targets Real/AI-Edit boundary)')
     parser.add_argument('--run_name', type=str, default=None,
                         help='Optional name for this run (used as subfolder, e.g. "exp1_lr1e4"). '
                              'Defaults to a timestamp like run_20260307_153045.')
+    parser.add_argument('--use_srm', action='store_true',
+                        help='Enable SRM high-pass filter layer (6-channel input: 3 RGB + 3 residuals)')
+    parser.add_argument('--loss', type=str, default='weighted_focal',
+                        choices=['ce', 'weighted', 'focal', 'weighted_focal'],
+                        help='Loss function (default: weighted_focal)')
+    parser.add_argument('--label_smoothing', type=float, default=0.1,
+                        help='Label smoothing factor (default: 0.1)')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='Optimizer weight decay (default: 1e-4)')
+    parser.add_argument('--early_stop_patience', type=int, default=7,
+                        help='Early stopping patience in epochs (default: 7)')
+    parser.add_argument('--profile', action='store_true',
+                        help='Enable PyTorch profiler on epoch 1 (slow — use for debugging only)')
+    parser.add_argument('--class_weights', type=float, nargs=3,
+                        metavar=('W_REAL', 'W_AIGEN', 'W_AIEDIT'),
+                        default=None,
+                        help='Per-class loss weights [real, ai_gen, ai_edit]. '
+                             'Default: 1.5 1.0 1.5. Example: --class_weights 2.0 1.0 1.5')
+    parser.add_argument('--dropout', type=float, default=0.4,
+                        help='Dropout probability before FC head (default: 0.4, set 0.0 to disable)')
+    parser.add_argument('--backbone', type=str, default='resnet18',
+                        choices=['resnet18', 'resnet50', 'convnext_tiny', 'convnext_small', 'efficientnet_b3', 'vit_b_16'],
+                        help='Backbone architecture (default: resnet18)')
+    parser.add_argument('--lr_schedule', type=str, default='cosine',
+                        choices=['cosine', 'plateau'],
+                        help='LR scheduler: cosine (CosineAnnealingWarmRestarts) or plateau (ReduceLROnPlateau)')
+    parser.add_argument('--focal_gamma', type=float, default=2.0,
+                        help='Focal loss gamma focusing parameter (default: 2.0, try 3.0 for harder boundary focus)')
     args = parser.parse_args()
     train(
         data_dir=args.data_dir,
@@ -412,11 +526,23 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         optimizer_name=args.optimizer,
+        weight_decay=args.weight_decay,
         val_split=args.val_split,
         checkpoint_dir=args.checkpoint_dir,
         plot_dir=args.plot_dir,
         seed=args.seed,
         config_path=args.config,
         light_augment=args.light_augment,
+        augment=args.augment,
         run_name=args.run_name,
+        use_srm=args.use_srm,
+        loss_type=args.loss,
+        label_smoothing=args.label_smoothing,
+        early_stop_patience=args.early_stop_patience,
+        enable_profiler=args.profile,
+        class_weights=args.class_weights,
+        dropout_p=args.dropout,
+        lr_schedule=args.lr_schedule,
+        backbone=args.backbone,
+        focal_gamma=args.focal_gamma,
     )
