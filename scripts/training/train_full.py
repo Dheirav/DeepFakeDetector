@@ -234,9 +234,9 @@ def train(
     # ── SRM Filter Layer ──────────────────────────────────────────────────
     if use_srm:
         srm_layer = SRMLayer().to(device)
-        if backbone == "resnet18":
+        if backbone == "resnet18" or backbone == "resnet50":
             model.conv1 = adapt_conv1_for_srm(model.conv1)
-        elif backbone == "convnext_tiny":
+        elif backbone == "convnext_tiny" or backbone == "convnext_small":
             model.features[0][0] = adapt_conv1_for_srm(model.features[0][0])
         class SRMNet(nn.Module):
             def __init__(self, srm, bb):
@@ -399,12 +399,13 @@ def train(
         ])
         metrics_csv_file.flush()
 
-        # Save checkpoint, keep only last checkpoint_path = os.path.join(checkpoint_dir, f"resnet18_epoch{epoch+1}.pth")3 to save disk
-        
+        checkpoint_path = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch+1}.pth")
         torch.save(model.state_dict(), checkpoint_path)
-        old_ckpt = os.path.join(checkpoint_dir,f"{backbone}_epoch{epoch+1}.pth")
-        if os.path.exists(old_ckpt):
-            os.remove(old_ckpt)
+
+        # remove previous checkpoint to save disk
+        prev_ckpt = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch}.pth")
+        if os.path.exists(prev_ckpt):
+            os.remove(prev_ckpt)
 
         # Save best model
         if val_acc > best_val_acc:

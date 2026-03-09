@@ -29,8 +29,8 @@ not a regularisation problem.
 | # | Step | Expected Δ Acc | Effort | Targets | Status |
 |---|---|---|---|---|---|
 | 1a | ~~Class weights [2.0,1.0,2.0]~~ | ~~+0.5–1.0%~~ | — | — | ✅ Done — [1.5,1.0,1.5] already won the sweep, higher weights hurt |
-| 1b | Focal gamma=3.0 (weights unchanged) | +0.3–0.7% | 30 min | Real→AIEdit, AIEdit→Real | 🔲 Not tried |
-| 2 | Compression + noise augmentation | +0.5–1.0% | 1 hr | Both directions | 🔲 Not tried |
+| 1b | Focal gamma=3.0 (weights unchanged) | +0.3–0.7% | 30 min | Real→AIEdit, AIEdit→Real | ✅ Done — convnext_gamma3 run complete |
+| 2 | Compression + noise augmentation | +0.5–1.0% | 1 hr | Both directions | ✅ Done — see convnext_augv2, convnext_augv3_light, convnext_augv4* |
 | 3 | Cascade specialist model | +1.5–3.0% | 4–6 hr | Both directions | 🔲 Not tried |
 | 4 | Attention / patch-level features (GeM pooling) | +1.0–2.0% | 3–4 hr | AIEdit→Real | 🔲 Not tried |
 | 5 | ~~ConvNeXt-Tiny backbone~~ | ~~+3.5%~~ | — | — | ✅ Done — current best 86.85% |
@@ -147,7 +147,39 @@ python scripts/training/train_specialist.py \
 
 ---
 
+
 ## Step 4 — Patch-Level Attention (Localise the Edit Region)
+
+### Add-on/Extendable Attention Head Methodology
+
+To make patch-level attention (e.g., GeM pooling, CBAM) an add-on, extendable feature:
+
+1. **Modularize the Classifier Head**
+    - Add an argument (e.g., `attention_head`) to `_build_backbone` in `train_full.py`.
+    - Allow dynamic selection of the classifier head (standard, GeM, CBAM, etc.).
+
+2. **Implement Attention Heads as Separate Modules**
+    - Create a file `modules/attention_heads.py`.
+    - Implement classes like `GeMMPoolingHead`, `CBAMHead`.
+    - Import and use them in `_build_backbone` based on the selected type.
+
+3. **Add Command-Line Argument**
+    - Add `--attention-head` to your training script to select the head type.
+
+4. **Example Integration (GeM Pooling):**
+    - In `train_full.py`, after parsing args, pass `args.attention_head` to `_build_backbone`.
+    - In `_build_backbone`, use:
+      ```python
+      if attention_head == "gem":
+            from modules.attention_heads import GeMMPoolingHead
+            m.classifier[2] = GeMMPoolingHead(m.classifier[2].in_features, num_classes, dropout_p)
+      ```
+
+5. **Extendable for Other Attention Modules**
+    - Add more heads (e.g., CBAM) in `modules/attention_heads.py`.
+    - Update `_build_backbone` to support them.
+
+This approach allows easy experimentation and extension with new attention/pooling heads.
 
 **Why:** ConvNeXt's global average pooling collapses spatial information. An AI-Edited
 image where only 10% of pixels were manipulated looks identical to Real at the global
@@ -243,25 +275,16 @@ Add `--mixup-alpha` flag (default 0.0, try 0.2–0.4).
 
 ---
 
-## Recommended Execution Order
 
-```
-Week 1 (low risk, fast):
-  ├── ✅ ConvNeXt-Tiny backbone (done — 86.85%)
-  ├── ✅ Weight sweep: [1.5,1.0,1.5] is best (done)
-  ├── Step 1b: gamma=3.0, weights unchanged — run convnext_gamma3
-  └── Step 2: augmentation update — retrain convnext_augv2
+## Updated Recommended Execution Order
 
-Week 2 (medium effort, high payoff):
-  └── Step 3: build train_specialist.py + evaluate_cascade.py
+1. Cascade specialist model (train_specialist.py, evaluate_cascade.py)
+2. Patch-level attention (GeM pooling or CBAM)
+3. ConvNeXt-Small backbone (if more capacity needed)
+4. Mixup Real↔AI-Edited (add --mixup-alpha)
+5. Final ensemble evaluation
 
-Week 3 (if cascade not sufficient):
-  ├── Step 4: GeM pooling head
-  └── Step 5b: ConvNeXt-Small run
-
-Week 4 (polish):
-  └── Step 6: Mixup Real↔AIEdit + final ensemble evaluation
-```
+All steps above should be measured using the checklist below after each run.
 
 ---
 
