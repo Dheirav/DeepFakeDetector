@@ -28,24 +28,14 @@ not a regularisation problem.
 
 | # | Step | Expected Δ Acc | Effort | Targets | Status |
 |---|---|---|---|---|---|
-| 1a | ~~Class weights [2.0,1.0,2.0]~~ | ~~+0.5–1.0%~~ | — | — | ✅ Done — [1.5,1.0,1.5] already won the sweep, higher weights hurt |
-| 1b | Focal gamma=3.0 (weights unchanged) | +0.3–0.7% | 30 min | Real→AIEdit, AIEdit→Real | ✅ Done — convnext_gamma3 run complete |
-| 2 | Compression + noise augmentation | +0.5–1.0% | 1 hr | Both directions | ✅ Done — see convnext_augv2, convnext_augv3_light, convnext_augv4* |
-| 3 | Cascade specialist model | +1.5–3.0% | 4–6 hr | Both directions | 🔲 Not tried |
-| 4 | Attention / patch-level features (GeM pooling) | +1.0–2.0% | 3–4 hr | AIEdit→Real | 🔲 Not tried |
-| 5 | ~~ConvNeXt-Tiny backbone~~ | ~~+3.5%~~ | — | — | ✅ Done — current best 86.85% |
-| 5b | ConvNeXt-Small (50M params) | +0.5–1.5% | 2 hr | General | 🔲 Not tried |
-| 6 | Mixup / CutMix between Real and AI-Edited | +0.5–1.0% | 1 hr | Both directions | 🔲 Not tried |
-| 1a | ~~Class weights [2.0,1.0,2.0]~~ | ~~+0.5–1.0%~~ | — | — | ✅ **DONE** — [1.5,1.0,1.5] already won the sweep, higher weights hurt |
-| 1b | Focal gamma=3.0 (weights unchanged) | +0.3–0.7% | 30 min | Real→AIEdit, AIEdit→Real | ✅ **DONE** — convnext_gamma3 run complete |
-| 2 | Compression + noise augmentation | +0.5–1.0% | 1 hr | Both directions | ✅ **DONE** — see convnext_augv2, convnext_augv3_light, convnext_augv4* |
-| 3 | Cascade specialist model | +1.5–3.0% | 4–6 hr | Both directions | 🔲 Not tried |
-| 4 | Attention / patch-level features (GeM pooling) | +1.0–2.0% | 3–4 hr | AIEdit→Real | 🔲 Not tried |
-| 5 | ~~ConvNeXt-Tiny backbone~~ | ~~+3.5%~~ | — | — | ✅ **DONE** — current best 86.85% |
-| 5b | ConvNeXt-Small (50M params) | +0.5–1.5% | 2 hr | General | 🔲 Not tried |
-| 6 | Mixup / CutMix between Real and AI-Edited | +0.5–1.0% | 1 hr | Both directions | 🔲 Not tried |
-
----
+| 1a | ~~Class weights [2.0,1.0,2.0]~~ | ~~+0.5–1.0%~~ | — | — | ✅ Done — sweep showed **[1.5,1.0,1.5] best**, higher weights hurt |
+| 1b | Focal loss (γ = 3.0) | +0.3–0.7% | ~30 min | Real→AIEdit, AIEdit→Real | ✅ Done — `convnext_gamma3` |
+| 2 | Compression + noise augmentation | +0.5–1.0% | ~1 hr | Both directions | ✅ Done — `convnext_augv2`, `convnext_augv3_light`, `convnext_augv4*` |
+| 3 | Cascade specialist model | +1.5–3.0% | 4–6 hr | Both directions | ⬜ Not tried |
+| 4 | Attention / patch-level features (GeM pooling) | +1.0–2.0% | 3–4 hr | AIEdit→Real | ⬜ Not tried |
+| 5 | ~~ConvNeXt-Tiny backbone~~ | ~~+3–4%~~ | — | — | ✅ Done |
+| 5b | ConvNeXt-Small backbone | +0.5–1.5% | ~2 hr | General | ✅ Done — `convnext_small_augv1_light` |
+| 6 | Mixup / CutMix between Real and AI-Edited | +0.5–1.0% | ~1 hr | Both directions | ⬜ Not tried |
 
 ## Step 1 — Boundary-Aware Loss Tuning
 
