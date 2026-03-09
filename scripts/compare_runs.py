@@ -58,7 +58,7 @@ DISPLAY_NAMES = {
     "sweep_w150_100_150": "ResNet-18 [1.5,1.0,1.5] (best sweep)",
     "resnet18_dropout_cosine": "ResNet-18 dropout=0.4 cosine",
     "resnet18_dropout05_plateau": "ResNet-18 dropout=0.5 plateau",
-    "convnext_srm_focal": "ConvNeXt-Tiny ★",
+    "convnext_srm_focal": "ConvNeXt-Tiny ",
 }
 
 # ── Data loading ───────────────────────────────────────────────────────────────
@@ -131,9 +131,31 @@ def build_palette(run_names: list[str]) -> dict[str, str]:
         "#607D8B",  # grey-blue
         "#8BC34A",  # light green
         "#795548",  # brown
-    ]
-    return {name: colours[i % len(colours)] for i, name in enumerate(run_names)}
 
+        "#3F51B5",  # indigo
+        "#E91E63",  # pink
+        "#009688",  # teal
+        "#CDDC39",  # lime
+        "#FFC107",  # amber
+        "#673AB7",  # deep purple
+        "#03A9F4",  # light blue
+        "#A1887F",  # light brown
+        "#AED581",  # pastel green
+        "#FF7043",  # coral
+
+        "#1E88E5",  # strong blue
+        "#D81B60",  # strong pink
+        "#43A047",  # strong green
+        "#FB8C00",  # strong orange
+        "#8E24AA",  # strong purple
+        "#26C6DA",  # bright cyan
+        "#7CB342",  # olive green
+        "#546E7A",  # slate
+        "#EF5350",  # soft red
+        "#AB47BC",  # lavender purple
+    ]
+
+    return {name: colours[i % len(colours)] for i, name in enumerate(run_names)}
 
 # ── Individual plot panels ─────────────────────────────────────────────────────
 
