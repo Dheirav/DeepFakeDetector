@@ -207,8 +207,9 @@ def train(
     print(f"Loss: {loss_type} | SRM: {use_srm} | Label smoothing: {label_smoothing} | WD: {weight_decay}")
     print(f"Class weights: {class_weights if class_weights else '[1.5, 1.0, 1.5] (default)'}")
     print(f"Backbone: {backbone} | Dropout (FC head): {dropout_p} | LR schedule: {lr_schedule} | Focal gamma: {focal_gamma} | Augment: {augment}")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(plot_dir, exist_ok=True)
+    if not getattr(args, "dry_run", False):
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        os.makedirs(plot_dir, exist_ok=True)
 
     # Early stopping state
     epochs_no_improve   = 0
@@ -217,8 +218,10 @@ def train(
     if pynvml_available:
         nvmlInit()
         gpu_handle = nvmlDeviceGetHandleByIndex(0)
-
-    writer = SummaryWriter(log_dir=os.path.join(plot_dir, "tensorboard"))
+    
+    writer = None
+    if not getattr(args, "dry_run", False): 
+        writer = SummaryWriter(log_dir=os.path.join(plot_dir, "tensorboard"))
 
     train_loader, val_loader = get_data_loaders(
         train_dir=data_dir,
@@ -274,13 +277,19 @@ def train(
 
     # Open CSV for per-epoch metrics logging
     metrics_csv_path = os.path.join(plot_dir, "metrics.csv")
-    os.makedirs(plot_dir, exist_ok=True)
-    metrics_csv_file = open(metrics_csv_path, 'w', newline='')
-    metrics_writer = csv.writer(metrics_csv_file)
-    metrics_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
-                              'val_f1_macro', 'f1_real', 'f1_ai_gen', 'f1_ai_edit'])
+    metrics_csv_file = None
+    metrics_writer = None
+    if not getattr(args, "dry_run", False):
+        os.makedirs(plot_dir, exist_ok=True)
+        metrics_csv_file = open(metrics_csv_path, 'w', newline='')
+        metrics_writer = csv.writer(metrics_csv_file)
+        metrics_writer.writerow(['epoch', 'train_loss', 'train_acc', 'val_loss', 'val_acc',
+                                'val_f1_macro', 'f1_real', 'f1_ai_gen', 'f1_ai_edit'])
 
     scaler = torch.amp.GradScaler('cuda', enabled=(device == "cuda"))
+    # If dry run, force epochs to 3
+    if getattr(args, "dry_run", False):
+        epochs = 3
     for epoch in range(epochs):
         model.train()
         running_loss = 0
@@ -301,7 +310,8 @@ def train(
         # Log to console and TensorBoard
         print(f"[Resource] Epoch {epoch+1}: {sys_stats}")
         for k, v in sys_stats.items():
-            writer.add_scalar(f"Resource/{k}", v, epoch+1)
+            if writer is not None:
+                writer.add_scalar(f"Resource/{k}", v, epoch+1)
 
         if epoch == 0 and enable_profiler:
             with torch.profiler.profile(
@@ -324,6 +334,13 @@ def train(
                     _, preds = torch.max(outputs, 1)
                     correct += (preds == labels).sum().item()
                     total += labels.size(0)
+                    if args.dry_run:
+                        print('Dry run: exiting after first batch.')
+                        metrics_csv_file.close()
+                        return
+                    if args.max_steps is not None and loop.n >= args.max_steps:
+                        print(f'Max steps ({args.max_steps}) reached, exiting epoch early.')
+                        break
                     prof.step()
             print("\n[PyTorch Profiler] First epoch summary:")
             print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
@@ -345,8 +362,9 @@ def train(
         train_acc = correct / total
         train_losses.append(train_loss)
         train_accs.append(train_acc)
-        writer.add_scalar('Loss/train', train_loss, epoch+1)
-        writer.add_scalar('Accuracy/train', train_acc, epoch+1)
+        if writer is not None:
+            writer.add_scalar('Loss/train', train_loss, epoch+1)
+            writer.add_scalar('Accuracy/train', train_acc, epoch+1)
 
         # Validation
         model.eval()
@@ -371,12 +389,13 @@ def train(
         val_f1_per_class = f1_score(val_all_labels, val_all_preds, average=None, labels=[0,1,2])
         val_losses.append(val_loss)
         val_accs.append(val_acc)
-        writer.add_scalar('Loss/val', val_loss, epoch+1)
-        writer.add_scalar('Accuracy/val', val_acc, epoch+1)
-        writer.add_scalar('F1_macro/val', val_f1_macro, epoch+1)
-        writer.add_scalar('F1/real',         val_f1_per_class[0], epoch+1)
-        writer.add_scalar('F1/ai_generated',  val_f1_per_class[1], epoch+1)
-        writer.add_scalar('F1/ai_edited',     val_f1_per_class[2], epoch+1)
+        if writer is not None:
+            writer.add_scalar('Loss/val', val_loss, epoch+1)
+            writer.add_scalar('Accuracy/val', val_acc, epoch+1)
+            writer.add_scalar('F1_macro/val', val_f1_macro, epoch+1)
+            writer.add_scalar('F1/real',         val_f1_per_class[0], epoch+1)
+            writer.add_scalar('F1/ai_generated',  val_f1_per_class[1], epoch+1)
+            writer.add_scalar('F1/ai_edited',     val_f1_per_class[2], epoch+1)
 
         if lr_schedule == "cosine":
             scheduler.step()
@@ -399,13 +418,14 @@ def train(
         ])
         metrics_csv_file.flush()
 
-        checkpoint_path = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch+1}.pth")
-        torch.save(model.state_dict(), checkpoint_path)
+        if not getattr(args, "dry_run", False):
+            checkpoint_path = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch+1}.pth")
+            torch.save(model.state_dict(), checkpoint_path)
 
-        # remove previous checkpoint to save disk
-        prev_ckpt = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch}.pth")
-        if os.path.exists(prev_ckpt):
-            os.remove(prev_ckpt)
+            # remove previous checkpoint to save disk
+            prev_ckpt = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch}.pth")
+            if os.path.exists(prev_ckpt):
+                os.remove(prev_ckpt)
 
         # Save best model
         if val_acc > best_val_acc:
@@ -423,25 +443,26 @@ def train(
     metrics_csv_file.close()
     print(f"Per-epoch metrics saved to: {metrics_csv_path}")
 
-    # Plot loss and accuracy curves
-    actual_epochs = len(train_losses)
-    plt.figure()
-    plt.plot(range(1, actual_epochs+1), train_losses, label="Train Loss")
-    plt.plot(range(1, actual_epochs+1), val_losses, label="Val Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.title("Loss Curve")
-    plt.savefig(os.path.join(plot_dir, "loss_curve.png"))
+    if not getattr(args, "dry_run", False):
+        # Plot loss and accuracy curves
+        actual_epochs = len(train_losses)
+        plt.figure()
+        plt.plot(range(1, actual_epochs+1), train_losses, label="Train Loss")
+        plt.plot(range(1, actual_epochs+1), val_losses, label="Val Loss")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.title("Loss Curve")
+        plt.savefig(os.path.join(plot_dir, "loss_curve.png"))
 
-    plt.figure()
-    plt.plot(range(1, actual_epochs+1), train_accs, label="Train Acc")
-    plt.plot(range(1, actual_epochs+1), val_accs, label="Val Acc")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.legend()
-    plt.title("Accuracy Curve")
-    plt.savefig(os.path.join(plot_dir, "accuracy_curve.png"))
+        plt.figure()
+        plt.plot(range(1, actual_epochs+1), train_accs, label="Train Acc")
+        plt.plot(range(1, actual_epochs+1), val_accs, label="Val Acc")
+        plt.xlabel("Epoch")
+        plt.ylabel("Accuracy")
+        plt.legend()
+        plt.title("Accuracy Curve")
+        plt.savefig(os.path.join(plot_dir, "accuracy_curve.png"))
 
     writer.close()
     if pynvml_available:
@@ -464,8 +485,9 @@ def train(
         }
     }
     summary_path = os.path.join(plot_dir, "training_summary.json")
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2)
+    if not getattr(args, "dry_run", False):
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
     print(f"Training summary saved to: {summary_path}")
     print("Training complete. Best model saved at:", best_model_path)
 
@@ -514,6 +536,8 @@ if __name__ == "__main__":
     parser.add_argument('--backbone', type=str, default='resnet18',
                         choices=['resnet18', 'resnet50', 'convnext_tiny', 'convnext_small', 'efficientnet_b3', 'vit_b_16'],
                         help='Backbone architecture (default: resnet18)')
+    parser.add_argument('--dry-run', action='store_true', help='Run a single forward/backward pass and exit')
+    parser.add_argument('--max-steps', type=int, default=None, help='Maximum number of training steps (batches) per epoch (for dry run/testing)')
     parser.add_argument('--lr_schedule', type=str, default='cosine',
                         choices=['cosine', 'plateau'],
                         help='LR scheduler: cosine (CosineAnnealingWarmRestarts) or plateau (ReduceLROnPlateau)')

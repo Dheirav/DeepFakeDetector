@@ -53,20 +53,33 @@ def _derive_save_dir(model_path: str) -> str:
     stem = os.path.splitext(os.path.basename(abs_path))[0]
     return os.path.join(_PROJECT_ROOT, "results", stem)
 
-def _build_srm_net(device, sequential_fc=False, is_convnext=False):
+def _build_srm_net(device, arch="resnet18", sequential_fc=False):
     """Reconstruct the SRM-wrapped model used during training."""
+
     def make_fc(in_features):
         if sequential_fc:
             return nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_features, 3))
         return nn.Linear(in_features, 3)
 
-    if is_convnext:
-        from torchvision.models import ConvNeXt_Tiny_Weights
+    if arch == "convnext_tiny":
         backbone = models.convnext_tiny(weights=None)
         backbone.classifier[2] = make_fc(backbone.classifier[2].in_features)
         srm_layer = SRMLayer().to(device)
         backbone.features[0][0] = adapt_conv1_for_srm(backbone.features[0][0])
-    else:
+
+    elif arch == "convnext_small":
+        backbone = models.convnext_small(weights=None)
+        backbone.classifier[2] = make_fc(backbone.classifier[2].in_features)
+        srm_layer = SRMLayer().to(device)
+        backbone.features[0][0] = adapt_conv1_for_srm(backbone.features[0][0])
+
+    elif arch == "resnet50":
+        backbone = models.resnet50(weights=None)
+        backbone.fc = make_fc(2048)
+        srm_layer = SRMLayer().to(device)
+        backbone.conv1 = adapt_conv1_for_srm(backbone.conv1)
+
+    else:  # default resnet18
         backbone = models.resnet18(weights=None)
         backbone.fc = make_fc(512)
         srm_layer = SRMLayer().to(device)
@@ -77,6 +90,7 @@ def _build_srm_net(device, sequential_fc=False, is_convnext=False):
             super().__init__()
             self.srm = srm
             self.backbone = bb
+
         def forward(self, x):
             return self.backbone(self.srm(x))
 
@@ -86,37 +100,87 @@ def _build_srm_net(device, sequential_fc=False, is_convnext=False):
 def load_model(model_path, device):
     raw_sd = torch.load(model_path, map_location=device)
 
-    # torch.compile wraps every key with "_orig_mod." — strip it.
+    # torch.compile wraps every key with "_orig_mod."
     if any(k.startswith("_orig_mod.") for k in raw_sd):
         raw_sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}
 
-    # Detect architecture from state dict keys
-    has_srm      = any(k.startswith("backbone.") for k in raw_sd)
-    is_convnext  = any(k.startswith("backbone.features.") for k in raw_sd)
-    # Detect Sequential FC head: key ends with "fc.1.weight" (ResNet) or "classifier.2.1.weight" (ConvNeXt)
-    sequential_fc = any(k.endswith("fc.1.weight") or k.endswith("classifier.2.1.weight") for k in raw_sd)
+    # Detect if SRM wrapper was used
+    has_srm = any(k.startswith("backbone.") for k in raw_sd)
+
+    # Detect ConvNeXt
+    is_convnext = any("features." in k for k in raw_sd)
+
+    # Detect ResNet50 vs ResNet18
+    is_resnet50 = any(
+        v.shape[-1] == 2048
+        for k, v in raw_sd.items()
+        if "fc" in k and "weight" in k
+    )
+
+    # Detect ConvNeXt Small by looking at stage-3 block depth
+    is_convnext_small = any(
+        "features.5.20" in k or "backbone.features.5.20" in k
+        for k in raw_sd
+    )
+
+    # Detect Sequential FC head
+    sequential_fc = any(
+        k.endswith("fc.1.weight") or k.endswith("classifier.2.1.weight")
+        for k in raw_sd
+    )
+
+    # Determine architecture name
+    if is_convnext:
+        arch = "convnext_small" if is_convnext_small else "convnext_tiny"
+    else:
+        arch = "resnet50" if is_resnet50 else "resnet18"
+
+    fc_label = "Sequential(Dropout+Linear)" if sequential_fc else "Linear"
 
     if has_srm:
-        arch = "ConvNeXt-Tiny" if is_convnext else "ResNet-18"
-        fc_label = "Sequential(Dropout+Linear)" if sequential_fc else "Linear"
         print(f"Detected SRM checkpoint — rebuilding SRMNet ({arch}, FC: {fc_label}).")
-        model = _build_srm_net(device, sequential_fc=sequential_fc, is_convnext=is_convnext)
-    elif is_convnext or any(k.startswith("features.") for k in raw_sd):
-        from torchvision.models import ConvNeXt_Tiny_Weights
+        model = _build_srm_net(device, arch=arch, sequential_fc=sequential_fc)
+
+    elif arch == "convnext_tiny":
         print("Detected plain ConvNeXt-Tiny checkpoint.")
         model = models.convnext_tiny(weights=None)
         in_feat = model.classifier[2].in_features
-        model.classifier[2] = nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3)) if sequential_fc else nn.Linear(in_feat, 3)
+        model.classifier[2] = (
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
+            if sequential_fc else nn.Linear(in_feat, 3)
+        )
+
+    elif arch == "convnext_small":
+        print("Detected plain ConvNeXt-Small checkpoint.")
+        model = models.convnext_small(weights=None)
+        in_feat = model.classifier[2].in_features
+        model.classifier[2] = (
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
+            if sequential_fc else nn.Linear(in_feat, 3)
+        )
+
+    elif arch == "resnet50":
+        print("Detected plain ResNet50 checkpoint.")
+        model = models.resnet50(weights=None)
+        in_feat = 2048
+        model.fc = (
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
+            if sequential_fc else nn.Linear(in_feat, 3)
+        )
+
     else:
+        print("Detected plain ResNet18 checkpoint.")
         model = models.resnet18(weights=None)
-        if sequential_fc:
-            model.fc = nn.Sequential(nn.Dropout(p=0.0), nn.Linear(512, 3))
-        else:
-            model.fc = nn.Linear(512, 3)
+        in_feat = 512
+        model.fc = (
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
+            if sequential_fc else nn.Linear(in_feat, 3)
+        )
 
     model.load_state_dict(raw_sd)
     model.to(device)
     model.eval()
+
     return model
 
 def run_evaluation(model_path, data_dir, batch_size=64, save_dir="../results"):
