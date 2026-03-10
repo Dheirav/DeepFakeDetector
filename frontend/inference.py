@@ -1,5 +1,15 @@
 import os
+import sys
 from typing import Dict, Optional, Tuple, List
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SCRIPTS_PATH = os.path.join(PROJECT_ROOT, "scripts")
+
+sys.path.insert(0, PROJECT_ROOT)
+sys.path.insert(0, SCRIPTS_PATH)
+
+from preprocessing.srm import SRMLayer
+from modules.attention_heads import GeM, CBAMBlock
 
 from PIL import Image
 import numpy as np
@@ -23,40 +33,113 @@ def get_device(use_gpu: bool = True):
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def load_model(checkpoint_path: Optional[str] = None, device: Optional[object] = None):
-    """Load ResNet18 adapted for 3 classes. If checkpoint exists, attempt to load it.
+def load_model(checkpoint_path: Optional[str] = None, device=None):
 
-    Returns a model on `device` or raises RuntimeError if torch missing.
-    """
     if torch is None:
         raise RuntimeError("PyTorch is not available")
+
     device = device or get_device()
-    from torchvision.models import ResNet18_Weights
-    model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-    model.fc = torch.nn.Linear(model.fc.in_features, 3)
-    model = model.to(device)
 
-    if checkpoint_path and os.path.isfile(checkpoint_path):
-        try:
-            state = torch.load(checkpoint_path, map_location=device)
-            # support various checkpoint formats
-            if isinstance(state, dict) and "state_dict" in state:
-                sd = state["state_dict"]
-            elif isinstance(state, dict) and "model_state" in state:
-                sd = state["model_state"]
-            else:
-                sd = state
-            # torch.compile prefixes every key with "_orig_mod." — strip it so
-            # the compiled checkpoint loads correctly into a plain model.
-            if any(k.startswith("_orig_mod.") for k in sd):
-                sd = {k.replace("_orig_mod.", "", 1): v for k, v in sd.items()}
-            model.load_state_dict(sd, strict=True)
-        except Exception as e:
-            raise RuntimeError(f"Failed to load checkpoint '{checkpoint_path}': {e}")
+    raw_sd = torch.load(checkpoint_path, map_location=device)
 
+    # remove torch.compile prefix
+    if any(k.startswith("_orig_mod.") for k in raw_sd):
+        raw_sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}
+
+    # detect SRM
+    has_srm = any(k.startswith("backbone.") for k in raw_sd)
+
+    # detect convnext
+    is_convnext = any("features." in k for k in raw_sd)
+
+    # detect resnet50
+    is_resnet50 = any(
+        v.shape[-1] == 2048
+        for k, v in raw_sd.items()
+        if "fc" in k and "weight" in k
+    )
+
+    # detect convnext small
+    is_convnext_small = any(
+        "features.5.20" in k or "backbone.features.5.20" in k
+        for k in raw_sd
+    )
+
+    # detect sequential fc
+    sequential_fc = any(
+        k.endswith("fc.1.weight") or k.endswith("classifier.2.1.weight")
+        for k in raw_sd
+    )
+
+    # determine architecture
+    if is_convnext:
+        arch = "convnext_small" if is_convnext_small else "convnext_tiny"
+    else:
+        arch = "resnet50" if is_resnet50 else "resnet18"
+
+    # build model
+    if arch == "resnet18":
+        model = models.resnet18(weights=None)
+        in_feat = 512
+        model.fc = (
+            torch.nn.Sequential(torch.nn.Dropout(0.0), torch.nn.Linear(in_feat, 3))
+            if sequential_fc else torch.nn.Linear(in_feat, 3)
+        )
+
+    elif arch == "resnet50":
+        model = models.resnet50(weights=None)
+        in_feat = 2048
+        model.fc = (
+            torch.nn.Sequential(torch.nn.Dropout(0.0), torch.nn.Linear(in_feat, 3))
+            if sequential_fc else torch.nn.Linear(in_feat, 3)
+        )
+
+    elif arch == "convnext_tiny":
+        model = models.convnext_tiny(weights=None)
+        in_feat = model.classifier[2].in_features
+        model.classifier[2] = (
+            torch.nn.Sequential(torch.nn.Dropout(0.0), torch.nn.Linear(in_feat, 3))
+            if sequential_fc else torch.nn.Linear(in_feat, 3)
+        )
+
+    elif arch == "convnext_small":
+        model = models.convnext_small(weights=None)
+        in_feat = model.classifier[2].in_features
+        model.classifier[2] = (
+            torch.nn.Sequential(torch.nn.Dropout(0.0), torch.nn.Linear(in_feat, 3))
+            if sequential_fc else torch.nn.Linear(in_feat, 3)
+        )
+
+    # SRM wrapper
+    if has_srm:
+        from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
+
+        srm = SRMLayer().to(device)
+
+        if arch in ["resnet18", "resnet50"]:
+            model.conv1 = adapt_conv1_for_srm(model.conv1)
+
+        elif arch in ["convnext_tiny", "convnext_small"]:
+            stem = model.features[0][0]
+            stem[0] = adapt_conv1_for_srm(stem[0])
+
+        class SRMNet(torch.nn.Module):
+            def __init__(self, srm, backbone):
+                super().__init__()
+                self.srm = srm
+                self.backbone = backbone
+
+            def forward(self, x):
+                return self.backbone(self.srm(x))
+
+        model = SRMNet(srm, model)
+
+    model.load_state_dict(raw_sd)
+
+    model.to(device)
     model.eval()
-    return model
 
+    return model
 
 def preprocess_image(pil_image: Image.Image, size: Tuple[int, int] = (224, 224)):
     """Preprocess PIL image to model input tensor."""

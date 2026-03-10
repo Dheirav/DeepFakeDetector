@@ -50,6 +50,7 @@ class GradCAM:
             raise RuntimeError("PyTorch required for GradCAM")
         
         self.model = model
+        self.backbone = model.backbone if hasattr(model, "backbone") else model
         self.device = next(model.parameters()).device
         self.verbose = verbose
         self.activations = None
@@ -60,7 +61,7 @@ class GradCAM:
         if target_layer is not None:
             self.target_module = target_layer
         else:
-            self.target_module = self._find_target_module(model)
+            self.target_module = self._find_target_module(self.backbone)
         
         if self.target_module is None:
             raise RuntimeError("Could not find target convolutional layer. Specify target_layer manually.")

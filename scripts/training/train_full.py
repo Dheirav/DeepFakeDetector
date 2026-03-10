@@ -51,9 +51,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import train_transform, val_transform, get_train_transform
 from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
+from preprocessing.fft import FFTLayer
 from training.losses import build_criterion
+from modules.attention_heads import GeM, CBAMBlock
 
-def _build_backbone(backbone_name, num_classes, dropout_p):
+
+def _build_backbone(
+    backbone_name,
+    num_classes,
+    dropout_p,
+    attention_head="none",
+    gem_p=3.0,
+    gem_learnable=False,
+    cbam_reduction=16,
+    cbam_kernel=7,
+):
     """Build a pretrained backbone with a custom classification head."""
     def make_head(in_features):
         if dropout_p > 0:
@@ -62,30 +74,73 @@ def _build_backbone(backbone_name, num_classes, dropout_p):
 
     if backbone_name == "resnet18":
         m = models.resnet18(weights=ResNet18_Weights.DEFAULT)
-        m.fc = make_head(m.fc.in_features)  # 512 → num_classes
-        return m
+        in_features = m.fc.in_features  # 512
+        m.fc = make_head(in_features)   # 512 → num_classes
+        in_channels = in_features
+        arch = "resnet"
     elif backbone_name == "convnext_tiny":
         m = models.convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
-        m.classifier[2] = make_head(m.classifier[2].in_features)  # 768 → num_classes
-        return m
+        in_features = m.classifier[2].in_features  # 768
+        m.classifier[2] = make_head(in_features)   # 768 → num_classes
+        in_channels = in_features
+        arch = "convnext"
     elif backbone_name == "resnet50":
         m = models.resnet50(weights=ResNet50_Weights.DEFAULT)
-        m.fc = make_head(m.fc.in_features)  # 2048 → num_classes
-        return m
+        in_features = m.fc.in_features  # 2048
+        m.fc = make_head(in_features)   # 2048 → num_classes
+        in_channels = in_features
+        arch = "resnet"
     elif backbone_name == "convnext_small":
         m = models.convnext_small(weights=ConvNeXt_Small_Weights.DEFAULT)
-        m.classifier[2] = make_head(m.classifier[2].in_features)  # 768 → num_classes
-        return m
+        in_features = m.classifier[2].in_features  # 768
+        m.classifier[2] = make_head(in_features)   # 768 → num_classes
+        in_channels = in_features
+        arch = "convnext"
     elif backbone_name == "efficientnet_b3":
         m = models.efficientnet_b3(weights=EfficientNet_B3_Weights.DEFAULT)
-        m.classifier[1] = make_head(m.classifier[1].in_features)  # 1536 → num_classes
-        return m
+        in_features = m.classifier[1].in_features  # 1536
+        m.classifier[1] = make_head(in_features)   # 1536 → num_classes
+        in_channels = in_features
+        arch = "efficientnet"
     elif backbone_name == "vit_b_16":
+        # ViT uses token-based pooling; we currently do not support patch-level
+        # attention heads for it in this script.
         m = models.vit_b_16(weights=ViT_B_16_Weights.DEFAULT)
         m.heads.head = make_head(m.heads.head.in_features)  # 768 → num_classes
-        return m
+        arch = "vit"
+        in_channels = None
     else:
-        raise ValueError(f"Unsupported backbone '{backbone_name}'. Choose: resnet18, convnext_tiny")
+        raise ValueError(
+            f"Unsupported backbone '{backbone_name}'. "
+            "Choose: resnet18, resnet50, convnext_tiny, convnext_small, efficientnet_b3, vit_b_16"
+        )
+
+    # Apply optional patch-level attention only for CNN-style backbones.
+    if attention_head not in ("none", "", None):
+        if arch == "vit":
+            raise ValueError("attention_head is only supported for CNN backbones, not ViT.")
+
+        if attention_head == "cbam":
+            cbam = CBAMBlock(
+                channels=in_channels,
+                reduction=cbam_reduction,
+                kernel_size=cbam_kernel,
+            )
+            if arch == "resnet":
+                m.layer4 = nn.Sequential(m.layer4, cbam)
+            elif arch in ("convnext", "efficientnet"):
+                m.features = nn.Sequential(m.features, cbam)
+        elif attention_head == "gem":
+            # GeM replaces the global average pooling op.
+            gem = GeM(p=gem_p, learnable=gem_learnable)
+            if arch in ("resnet", "convnext", "efficientnet"):
+                m.avgpool = gem
+            else:
+                raise ValueError(f"GeM pooling not wired for arch '{arch}'.")
+        else:
+            raise ValueError(f"Unknown attention_head '{attention_head}'. Choose: none, gem, cbam.")
+
+    return m
 
 
 def get_data_loaders(train_dir, batch_size, val_dir=None, val_split=0.2, seed=42, augment="standard"):
@@ -151,6 +206,7 @@ def train(
     augment="standard",
     run_name=None,
     use_srm=False,
+    use_fft=False,
     loss_type="weighted_focal",
     label_smoothing=0.1,
     early_stop_patience=7,
@@ -159,7 +215,13 @@ def train(
     dropout_p=0.4,
     lr_schedule="cosine",
     backbone="resnet18",
-    focal_gamma=2.0,
+    focal_gamma=3.0,
+    attention_head="none",
+    gem_p=3.0,
+    gem_learnable=False,
+    cbam_reduction=16,
+    cbam_kernel=7,
+
 ):
     # Load config if provided (single read)
     if config_path:
@@ -189,6 +251,11 @@ def train(
         lr_schedule      = config.get('lr_schedule', lr_schedule)
         focal_gamma      = config.get('focal_gamma', focal_gamma)
         backbone         = config.get('backbone', backbone)
+        attention_head   = config.get('attention_head', attention_head)
+        gem_p            = config.get('gem_p', gem_p)
+        gem_learnable    = config.get('gem_learnable', gem_learnable)
+        cbam_reduction   = config.get('cbam_reduction', cbam_reduction)
+        cbam_kernel      = config.get('cbam_kernel', cbam_kernel)
 
     # light_augment flag is a legacy alias — map it into the augment string
     if light_augment:
@@ -204,9 +271,13 @@ def train(
     set_seed(seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device} | Epochs: {epochs} | Batch: {batch_size} | LR: {lr}")
-    print(f"Loss: {loss_type} | SRM: {use_srm} | Label smoothing: {label_smoothing} | WD: {weight_decay}")
+    print(f"Loss: {loss_type} | SRM: {use_srm} | FFT: {use_fft} | Label smoothing: {label_smoothing} | WD: {weight_decay}")
     print(f"Class weights: {class_weights if class_weights else '[1.5, 1.0, 1.5] (default)'}")
-    print(f"Backbone: {backbone} | Dropout (FC head): {dropout_p} | LR schedule: {lr_schedule} | Focal gamma: {focal_gamma} | Augment: {augment}")
+    print(
+        f"Backbone: {backbone} | Dropout (FC head): {dropout_p} | "
+        f"LR schedule: {lr_schedule} | Focal gamma: {focal_gamma} | "
+        f"Augment: {augment} | Attention head: {attention_head}"
+    )
     if not getattr(args, "dry_run", False):
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(plot_dir, exist_ok=True)
@@ -232,25 +303,91 @@ def train(
         augment=augment
     )
 
-    model = _build_backbone(backbone, num_classes=3, dropout_p=dropout_p)
+    model = _build_backbone(
+        backbone,
+        num_classes=3,
+        dropout_p=dropout_p,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
+    )
 
     # ── SRM Filter Layer ──────────────────────────────────────────────────
+    srm_layer = None
+    fft_layer = None
+
+    class PreprocessNet(nn.Module):
+        def __init__(self, srm, fft, backbone):
+            super().__init__()
+            self.srm = srm
+            self.fft = fft
+            self.backbone = backbone
+
+        def forward(self, x):
+
+            rgb = x
+            features = [rgb]
+
+            if self.srm is not None:
+                srm_out = self.srm(rgb)
+                # Some SRM implementations return the original RGB concatenated
+                # with residual maps (RGB + 3 residuals => 6 channels). In that
+                # case only append the residual channels to avoid duplicating
+                # the RGB channels (which would produce 9 input channels).
+                if srm_out.shape[1] == rgb.shape[1] * 2:
+                    residuals = srm_out[:, rgb.shape[1]:, ...]
+                    features.append(residuals)
+                else:
+                    features.append(srm_out)
+
+            if self.fft is not None:
+                features.append(self.fft(rgb))
+
+            x = torch.cat(features, dim=1)
+
+            return self.backbone(x)
+
     if use_srm:
         srm_layer = SRMLayer().to(device)
-        if backbone == "resnet18" or backbone == "resnet50":
-            model.conv1 = adapt_conv1_for_srm(model.conv1)
-        elif backbone == "convnext_tiny" or backbone == "convnext_small":
-            model.features[0][0] = adapt_conv1_for_srm(model.features[0][0])
-        class SRMNet(nn.Module):
-            def __init__(self, srm, bb):
-                super().__init__()
-                self.srm = srm
-                self.backbone = bb
-            def forward(self, x):
-                return self.backbone(self.srm(x))
-        model = SRMNet(srm_layer, model)
-        print(f"SRM layer enabled on {backbone} (6-channel input: 3 RGB + 3 residuals)")
 
+    if use_fft:
+        fft_layer = FFTLayer().to(device)
+
+    in_channels = 3
+    if use_srm:
+        in_channels += 3
+    if use_fft:
+        in_channels += 1
+
+    if use_srm or use_fft:
+
+        if backbone in ["resnet18", "resnet50"]:
+            model.conv1 = adapt_conv1_for_srm(model.conv1, in_channels)
+
+        elif backbone in ["convnext_tiny", "convnext_small"]:
+            # ConvNeXt stem layouts vary between torchvision versions. Find
+            # and replace the first Conv2d in the stem instead of assuming a
+            # fixed attribute name.
+            stem = model.features[0]
+
+            def _replace_first_conv(module, target_in_channels):
+                for name, child in module.named_children():
+                    if isinstance(child, nn.Conv2d):
+                        setattr(module, name, adapt_conv1_for_srm(child, target_in_channels))
+                        return True
+                    if _replace_first_conv(child, target_in_channels):
+                        return True
+                return False
+
+            replaced = _replace_first_conv(stem, in_channels)
+            if not replaced:
+                raise RuntimeError("Unable to locate stem Conv2d to adapt for SRM/FFT preprocessing")
+
+        model = PreprocessNet(srm_layer, fft_layer, model)
+        print(f"Preprocessing enabled (SRM={use_srm}, FFT={use_fft})")
+    
     model.to(device)
 
     if hasattr(torch, "compile"):
@@ -289,7 +426,7 @@ def train(
     scaler = torch.amp.GradScaler('cuda', enabled=(device == "cuda"))
     # If dry run, force epochs to 3
     if getattr(args, "dry_run", False):
-        epochs = 3
+        epochs = 1
     for epoch in range(epochs):
         model.train()
         running_loss = 0
@@ -336,7 +473,8 @@ def train(
                     total += labels.size(0)
                     if args.dry_run:
                         print('Dry run: exiting after first batch.')
-                        metrics_csv_file.close()
+                        if metrics_csv_file is not None:
+                            metrics_csv_file.close()
                         return
                     if args.max_steps is not None and loop.n >= args.max_steps:
                         print(f'Max steps ({args.max_steps}) reached, exiting epoch early.')
@@ -406,17 +544,18 @@ def train(
               f"Val Loss={val_loss:.4f}, Val Acc={val_acc:.4f}, Val F1={val_f1_macro:.4f} "
               f"[real={val_f1_per_class[0]:.3f} ai_gen={val_f1_per_class[1]:.3f} ai_edit={val_f1_per_class[2]:.3f}]")
 
-        # Log per-epoch metrics to CSV
-        metrics_writer.writerow([
-            epoch + 1,
-            round(train_loss, 6), round(train_acc, 6),
-            round(val_loss, 6), round(val_acc, 6),
-            round(val_f1_macro, 6),
-            round(float(val_f1_per_class[0]), 6),
-            round(float(val_f1_per_class[1]), 6),
-            round(float(val_f1_per_class[2]), 6),
-        ])
-        metrics_csv_file.flush()
+        # Log per-epoch metrics to CSV (only when not a dry run)
+        if metrics_writer is not None and metrics_csv_file is not None:
+            metrics_writer.writerow([
+                epoch + 1,
+                round(train_loss, 6), round(train_acc, 6),
+                round(val_loss, 6), round(val_acc, 6),
+                round(val_f1_macro, 6),
+                round(float(val_f1_per_class[0]), 6),
+                round(float(val_f1_per_class[1]), 6),
+                round(float(val_f1_per_class[2]), 6),
+            ])
+            metrics_csv_file.flush()
 
         if not getattr(args, "dry_run", False):
             checkpoint_path = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch+1}.pth")
@@ -431,8 +570,11 @@ def train(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             epochs_no_improve = 0
-            torch.save(model.state_dict(), best_model_path)
-            print(f"  ✔ Best model saved (epoch {epoch+1}, val acc {val_acc:.4f}, val F1 {val_f1_macro:.4f})")
+            if not getattr(args, "dry_run", False):
+                torch.save(model.state_dict(), best_model_path)
+                print(f"  ✔ Best model saved (epoch {epoch+1}, val acc {val_acc:.4f}, val F1 {val_f1_macro:.4f})")
+            else:
+                print(f"  (dry-run) Best model NOT saved (would be: {best_model_path})")
         else:
             epochs_no_improve += 1
             print(f"  No improvement ({epochs_no_improve}/{early_stop_patience})")
@@ -440,8 +582,11 @@ def train(
                 print(f"Early stopping triggered at epoch {epoch+1}")
                 break
 
-    metrics_csv_file.close()
-    print(f"Per-epoch metrics saved to: {metrics_csv_path}")
+    if metrics_csv_file is not None:
+        metrics_csv_file.close()
+        print(f"Per-epoch metrics saved to: {metrics_csv_path}")
+    else:
+        print("Per-epoch metrics not saved (dry run).")
 
     if not getattr(args, "dry_run", False):
         # Plot loss and accuracy curves
@@ -464,7 +609,8 @@ def train(
         plt.title("Accuracy Curve")
         plt.savefig(os.path.join(plot_dir, "accuracy_curve.png"))
 
-    writer.close()
+    if writer is not None:
+        writer.close()
     if pynvml_available:
         nvmlShutdown()
 
@@ -477,11 +623,16 @@ def train(
         "config": {
             "epochs": epochs, "batch_size": batch_size,
             "lr": lr, "optimizer": optimizer_name, "weight_decay": weight_decay,
-            "loss_type": loss_type, "use_srm": use_srm,
+            "loss_type": loss_type, "use_srm": use_srm, "use_fft": use_fft,
             "label_smoothing": label_smoothing, "seed": seed,
             "class_weights": class_weights if class_weights else [1.5, 1.0, 1.5],
             "dropout_p": dropout_p, "lr_schedule": lr_schedule, "backbone": backbone,
             "focal_gamma": focal_gamma, "augment": augment,
+            "attention_head": attention_head,
+            "gem_p": gem_p,
+            "gem_learnable": bool(gem_learnable),
+            "cbam_reduction": cbam_reduction,
+            "cbam_kernel": cbam_kernel,
         }
     }
     summary_path = os.path.join(plot_dir, "training_summary.json")
@@ -515,6 +666,8 @@ if __name__ == "__main__":
                              'Defaults to a timestamp like run_20260307_153045.')
     parser.add_argument('--use_srm', action='store_true',
                         help='Enable SRM high-pass filter layer (6-channel input: 3 RGB + 3 residuals)')
+    parser.add_argument('--use_fft',action='store_true',
+                        help='Enable FFT magnitude feature channel')
     parser.add_argument('--loss', type=str, default='weighted_focal',
                         choices=['ce', 'weighted', 'focal', 'weighted_focal'],
                         help='Loss function (default: weighted_focal)')
@@ -541,8 +694,19 @@ if __name__ == "__main__":
     parser.add_argument('--lr_schedule', type=str, default='cosine',
                         choices=['cosine', 'plateau'],
                         help='LR scheduler: cosine (CosineAnnealingWarmRestarts) or plateau (ReduceLROnPlateau)')
-    parser.add_argument('--focal_gamma', type=float, default=2.0,
-                        help='Focal loss gamma focusing parameter (default: 2.0, try 3.0 for harder boundary focus)')
+    parser.add_argument('--focal_gamma', type=float, default=3.0,
+                        help='Focal loss gamma focusing parameter (default: 3.0, try 4.0 for stronger focusing)')
+    parser.add_argument('--attention_head', type=str, default='none',
+                        choices=['none', 'gem', 'cbam'],
+                        help='Optional patch-level attention / pooling head: none (default), gem, cbam')
+    parser.add_argument('--gem_p', type=float, default=3.0,
+                        help='GeM pooling exponent p (only used when --attention_head gem)')
+    parser.add_argument('--gem_learnable', action='store_true',
+                        help='Make GeM exponent p learnable (only used when --attention_head gem)')
+    parser.add_argument('--cbam_reduction', type=int, default=16,
+                        help='CBAM channel reduction ratio (only used when --attention_head cbam)')
+    parser.add_argument('--cbam_kernel', type=int, default=7,
+                        help='CBAM spatial attention kernel size, 3 or 7 (only used when --attention_head cbam)')
     args = parser.parse_args()
     train(
         data_dir=args.data_dir,
@@ -561,6 +725,7 @@ if __name__ == "__main__":
         augment=args.augment,
         run_name=args.run_name,
         use_srm=args.use_srm,
+        use_fft=args.use_fft,
         loss_type=args.loss,
         label_smoothing=args.label_smoothing,
         early_stop_patience=args.early_stop_patience,
@@ -570,4 +735,9 @@ if __name__ == "__main__":
         lr_schedule=args.lr_schedule,
         backbone=args.backbone,
         focal_gamma=args.focal_gamma,
+        attention_head=args.attention_head,
+        gem_p=args.gem_p,
+        gem_learnable=args.gem_learnable,
+        cbam_reduction=args.cbam_reduction,
+        cbam_kernel=args.cbam_kernel,
     )

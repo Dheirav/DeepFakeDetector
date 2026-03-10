@@ -51,7 +51,7 @@ class FocalLoss(nn.Module):
 
     gamma=0  → equivalent to standard CrossEntropyLoss
     gamma=1  → linear down-weighting of easy examples
-    gamma=2  → (default) quadratic down-weighting — standard from the paper
+    gamma=3  → (default) stronger (cubic) down-weighting — more aggressive focusing
 
     Args:
         gamma:   Focusing parameter (0.0 = standard CE, 2.0 recommended).
@@ -66,7 +66,7 @@ class FocalLoss(nn.Module):
 
     def __init__(
         self,
-        gamma: float = 2.0,
+        gamma: float = 3.0,
         weight: Optional[torch.Tensor] = None,
         reduction: str = "mean",
         label_smoothing: float = 0.0,
@@ -113,20 +113,20 @@ class FocalLoss(nn.Module):
 
 
 def build_criterion(loss_type: str, device: str, label_smoothing: float = 0.0,
-                    class_weights: list = None, gamma: float = 2.0) -> nn.Module:
+                    class_weights: list = None, gamma: float = 3.0) -> nn.Module:
     """
     Factory function — returns the right loss module for the given loss_type string.
 
     Args:
         loss_type: One of:
-                   'ce'             — Standard CrossEntropyLoss (original baseline)
-                   'weighted'       — CrossEntropyLoss with class weights [1.5, 1.0, 1.5]
-                   'focal'          — FocalLoss(gamma=2) no class weights
-                   'weighted_focal' — FocalLoss(gamma=2) + class weights [1.5, 1.0, 1.5]
+                'ce'             — Standard CrossEntropyLoss (original baseline)
+                'weighted'       — CrossEntropyLoss with class weights [1.5, 1.0, 1.5]
+                'focal'          — FocalLoss(gamma=2) no class weights
+                'weighted_focal' — FocalLoss(gamma=2) + class weights [1.5, 1.0, 1.5]
         device:    'cuda' or 'cpu' — weights tensor is moved to device.
         label_smoothing: Applied to all loss types that support it.
         class_weights: Optional list of 3 floats [w_real, w_ai_gen, w_ai_edit].
-                       Overrides DEFAULT_WEIGHTS when provided.
+                    Overrides DEFAULT_WEIGHTS when provided.
 
     Returns:
         nn.Module loss callable: loss = criterion(logits, labels)

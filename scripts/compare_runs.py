@@ -268,10 +268,14 @@ def plot_f1_per_class_bar(ax, runs, palette):
 
 def plot_overfitting_gap(ax, runs, palette):
     """Bar chart: final train acc − final val acc (overfitting gap)."""
+    # Skip runs where the metrics DataFrame is empty — accessing .iloc[-1]
+    # would raise an IndexError for those runs.
     evaluated = [
         r
         for r in runs
-        if "train_acc" in r["metrics"].columns and "val_acc" in r["metrics"].columns
+        if "train_acc" in r["metrics"].columns
+        and "val_acc" in r["metrics"].columns
+        and len(r["metrics"]) > 0
     ]
     evaluated_sorted = sorted(
         evaluated,
@@ -348,17 +352,33 @@ def print_summary_table(runs):
         best_val = summary.get("best_val_acc", m["val_acc"].max())
         epochs = summary.get("epochs_trained", len(m))
         config = summary.get("config", {})
+
+        # Extract commonly-used config fields with sensible defaults
         backbone = config.get("backbone", "resnet18")
-        dropout = config.get("dropout_p", 0.0)
+        dropout = config.get("dropout_p", config.get("dropout", 0.0))
         lr_sched = config.get("lr_schedule", "—")
+        use_srm = config.get("use_srm", False)
+        use_fft = config.get("use_fft", False)
+        loss_type = config.get("loss_type", "—")
+        focal_gamma = config.get("focal_gamma", config.get("gamma", "—"))
+        augment = config.get("augment", "—")
+        attention = config.get("attention_head", config.get("attention", "none"))
+
         test_acc = f"{r['test_acc']*100:.2f}%" if r["test_acc"] else "—"
         f1_macro = f"{r['f1_macro']:.4f}" if r["f1_macro"] else "—"
+
         rows.append(
             {
                 "Run": DISPLAY_NAMES.get(r["name"], r["name"]),
                 "Backbone": backbone,
                 "Dropout": dropout,
                 "LR Schedule": lr_sched,
+                "SRM": "yes" if use_srm else "no",
+                "FFT": "yes" if use_fft else "no",
+                "Loss": loss_type,
+                "Gamma": focal_gamma,
+                "Augment": augment,
+                "Attention": attention,
                 "Epochs": epochs,
                 "Best Val": f"{best_val*100:.2f}%",
                 "Test Acc": test_acc,

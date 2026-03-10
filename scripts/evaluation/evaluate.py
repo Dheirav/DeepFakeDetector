@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import argparse
 import numpy as np
 import torch
@@ -14,12 +15,48 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import val_transform
 from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
+from preprocessing.fft import FFTLayer
+from modules.attention_heads import GeM, CBAMBlock
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
 
 # Project root = two levels above this script (scripts/evaluation/ → root)
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
+
+def _adapt_conv1_generic(conv1: nn.Conv2d, new_in_channels: int) -> nn.Conv2d:
+    """Create a new Conv2d with `new_in_channels` inputs, copying existing weights.
+
+    Extra input channels are initialised to a small fraction of the mean RGB weights.
+    """
+    out_ch, in_ch, kH, kW = conv1.weight.shape
+    new_conv = nn.Conv2d(
+        new_in_channels,
+        out_ch,
+        kernel_size=conv1.kernel_size,
+        stride=conv1.stride,
+        padding=conv1.padding,
+        bias=conv1.bias is not None,
+    )
+    with torch.no_grad():
+        copy_in = min(in_ch, new_in_channels)
+        new_conv.weight[:, :copy_in] = conv1.weight[:, :copy_in]
+        if new_in_channels > in_ch:
+            # initialise extra channels to 0.1 * mean of existing input-channel weights
+            mean_w = conv1.weight.mean(dim=1, keepdim=True)
+            extra = mean_w.repeat(1, new_in_channels - in_ch, 1, 1) * 0.1
+            new_conv.weight[:, in_ch:] = extra
+        if conv1.bias is not None:
+            new_conv.bias.copy_(conv1.bias)
+    return new_conv
+
+def _get_in_features(layer):
+    """Return in_features even if layer is Sequential(Dropout, Linear)."""
+    if isinstance(layer, nn.Sequential):
+        for m in reversed(layer):
+            if hasattr(m, "in_features"):
+                return m.in_features
+    return layer.in_features
 
 def _derive_save_dir(model_path: str) -> str:
     """
@@ -53,51 +90,254 @@ def _derive_save_dir(model_path: str) -> str:
     stem = os.path.splitext(os.path.basename(abs_path))[0]
     return os.path.join(_PROJECT_ROOT, "results", stem)
 
-def _build_srm_net(device, arch="resnet18", sequential_fc=False):
+def _apply_attention(
+    backbone: nn.Module,
+    arch: str,
+    attention_head: str = "none",
+    gem_p: float = 3.0,
+    gem_learnable: bool = False,
+    cbam_reduction: int = 16,
+    cbam_kernel: int = 7,
+) -> nn.Module:
+    """Apply optional GeM / CBAM heads so architecture matches training."""
+
+    if attention_head in ("none", "", None):
+        return backbone
+
+    if arch == "vit":
+        raise ValueError("attention_head is only supported for CNN backbones, not ViT.")
+
+    # Keep a reference to the original model (may be a PreprocessNet wrapper)
+    original_model = backbone
+    # ─────────────────────────────────────────────────────────────
+    # Determine where the real backbone lives (core)
+    # If model is a PreprocessNet wrapper it stores backbone in .backbone
+    # ─────────────────────────────────────────────────────────────
+    if arch.endswith("_srm") and hasattr(original_model, "backbone"):
+        core = original_model.backbone
+        arch_family = arch.replace("_srm", "")
+    else:
+        core = original_model
+        arch_family = arch
+
+    # ─────────────────────────────────────────────────────────────
+    # Extract channel size safely (handles Sequential heads)
+    # ─────────────────────────────────────────────────────────────
+    def get_in_features(layer):
+        if isinstance(layer, nn.Sequential):
+            for m in reversed(layer):
+                if hasattr(m, "in_features"):
+                    return m.in_features
+        return layer.in_features
+
+    # core is the real backbone module; inspect its head to find output feature size
+    if hasattr(core, "fc"):
+        in_channels = get_in_features(core.fc)
+    elif hasattr(core, "classifier"):
+        in_channels = get_in_features(core.classifier[2])
+    else:
+        raise ValueError(f"Unknown model type for attention: {type(core)}")
+
+    # ─────────────────────────────────────────────────────────────
+    # Apply attention module
+    # ─────────────────────────────────────────────────────────────
+    if attention_head == "cbam":
+
+        cbam = CBAMBlock(
+            channels=in_channels,
+            reduction=cbam_reduction,
+            kernel_size=cbam_kernel,
+        )
+
+        if arch_family in ("resnet18", "resnet50"):
+            core.layer4 = nn.Sequential(core.layer4, cbam)
+
+        elif arch_family in ("convnext_tiny", "convnext_small"):
+            core.features = nn.Sequential(core.features, cbam)
+
+    elif attention_head == "gem":
+
+        gem = GeM(p=gem_p, learnable=gem_learnable)
+
+        if arch_family in ("resnet18", "resnet50", "convnext_tiny", "convnext_small"):
+            core.avgpool = gem
+
+    else:
+        raise ValueError(
+            f"Unknown attention_head '{attention_head}'. Choose: none, gem, cbam."
+        )
+
+    # return the original model (wrapper) so PreprocessNet is preserved
+    return original_model
+
+def _build_srm_net(
+    device,
+    arch: str = "resnet18",
+    sequential_fc: bool = False,
+    has_srm: bool = False,
+    has_fft: bool = False,
+    attention_head: str = "none",
+    gem_p: float = 3.0,
+    gem_learnable: bool = False,
+    cbam_reduction: int = 16,
+    cbam_kernel: int = 7,
+):
     """Reconstruct the SRM-wrapped model used during training."""
+
 
     def make_fc(in_features):
         if sequential_fc:
             return nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_features, 3))
         return nn.Linear(in_features, 3)
 
-    if arch == "convnext_tiny":
+    # Initialize srm_layer to None at the start
+    srm_layer = None
+    in_channels = 3
+    # Compute desired input channels: RGB + SRM residuals (3) + FFT magnitude (1)
+    # Use the explicit `has_srm` argument here (avoid referencing `use_srm` before it's set)
+    desired_in_channels = 3 + (3 if has_srm else 0) + (1 if has_fft else 0)
+
+    if has_fft:
+        in_channels += 3
+
+    # Use explicit flag passed from load_model to decide SRM usage
+    use_srm = bool(has_srm)
+    if use_srm:
+        in_channels += 3
+
+    # Build backbone and adapt input channels if needed
+    if arch.startswith("convnext_tiny"):
         backbone = models.convnext_tiny(weights=None)
         backbone.classifier[2] = make_fc(backbone.classifier[2].in_features)
-        srm_layer = SRMLayer().to(device)
-        backbone.features[0][0] = adapt_conv1_for_srm(backbone.features[0][0])
+        if use_srm:
+            srm_layer = SRMLayer().to(device)
+            # adapt ConvNeXt stem conv to accept desired_in_channels
+            stem = backbone.features[0][0]
+            # try common locations for the conv
+            if hasattr(stem, "conv") and isinstance(stem.conv, nn.Conv2d):
+                stem.conv = adapt_conv1_for_srm(stem.conv) if desired_in_channels == 6 else _adapt_conv1_generic(stem.conv, desired_in_channels)
+            elif isinstance(stem, (nn.Sequential,)):
+                replaced = False
+                for i, m in enumerate(stem):
+                    if isinstance(m, nn.Conv2d):
+                        stem[i] = adapt_conv1_for_srm(m) if desired_in_channels == 6 else _adapt_conv1_generic(m, desired_in_channels)
+                        replaced = True
+                        break
+                if not replaced and len(stem) > 0 and isinstance(stem[0], nn.Conv2d):
+                    stem[0] = adapt_conv1_for_srm(stem[0]) if desired_in_channels == 6 else _adapt_conv1_generic(stem[0], desired_in_channels)
+            elif isinstance(stem, nn.Conv2d):
+                backbone.features[0][0] = adapt_conv1_for_srm(stem) if desired_in_channels == 6 else _adapt_conv1_generic(stem, desired_in_channels)
+            else:
+                try:
+                    backbone.features[0][0] = adapt_conv1_for_srm(stem)
+                except Exception:
+                    pass
+        arch_label = "convnext_tiny" + ("_srm" if use_srm else "")
 
-    elif arch == "convnext_small":
+    elif arch.startswith("convnext_small"):
         backbone = models.convnext_small(weights=None)
         backbone.classifier[2] = make_fc(backbone.classifier[2].in_features)
-        srm_layer = SRMLayer().to(device)
-        backbone.features[0][0] = adapt_conv1_for_srm(backbone.features[0][0])
+        if use_srm:
+            srm_layer = SRMLayer().to(device)
+            if use_srm or has_fft:
+                srm_layer = SRMLayer().to(device) if use_srm else None
+                stem = backbone.features[0][0]
+                if hasattr(stem, "conv") and isinstance(stem.conv, nn.Conv2d):
+                    stem.conv = adapt_conv1_for_srm(stem.conv) if desired_in_channels == 6 else _adapt_conv1_generic(stem.conv, desired_in_channels)
+                elif isinstance(stem, (nn.Sequential,)):
+                    for i, m in enumerate(stem):
+                        if isinstance(m, nn.Conv2d):
+                            stem[i] = adapt_conv1_for_srm(m) if desired_in_channels == 6 else _adapt_conv1_generic(m, desired_in_channels)
+                            break
+                elif isinstance(stem, nn.Conv2d):
+                    backbone.features[0][0] = adapt_conv1_for_srm(stem) if desired_in_channels == 6 else _adapt_conv1_generic(stem, desired_in_channels)
+                else:
+                    try:
+                        backbone.features[0][0] = adapt_conv1_for_srm(stem)
+                    except Exception:
+                        pass
+        arch_label = "convnext_small" + ("_srm" if use_srm else "")
 
-    elif arch == "resnet50":
+    elif arch.startswith("resnet50"):
         backbone = models.resnet50(weights=None)
         backbone.fc = make_fc(2048)
-        srm_layer = SRMLayer().to(device)
-        backbone.conv1 = adapt_conv1_for_srm(backbone.conv1)
+        if use_srm:
+            srm_layer = SRMLayer().to(device)
+            backbone.conv1 = adapt_conv1_for_srm(backbone.conv1)
+        if use_srm or has_fft:
+            srm_layer = SRMLayer().to(device) if use_srm else None
+            # adapt conv1 to desired_in_channels
+            backbone.conv1 = adapt_conv1_for_srm(backbone.conv1) if desired_in_channels == 6 else _adapt_conv1_generic(backbone.conv1, desired_in_channels)
+        arch_label = "resnet50" + ("_srm" if use_srm else "")
 
     else:  # default resnet18
         backbone = models.resnet18(weights=None)
         backbone.fc = make_fc(512)
-        srm_layer = SRMLayer().to(device)
-        backbone.conv1 = adapt_conv1_for_srm(backbone.conv1)
+        if use_srm or has_fft:
+            srm_layer = SRMLayer().to(device) if use_srm else None
+            backbone.conv1 = adapt_conv1_for_srm(backbone.conv1) if desired_in_channels == 6 else _adapt_conv1_generic(backbone.conv1, desired_in_channels)
+        arch_label = "resnet18" + ("_srm" if use_srm else "")
 
-    class SRMNet(nn.Module):
-        def __init__(self, srm, bb):
+    class PreprocessNet(nn.Module):
+        def __init__(self, srm, fft, backbone):
             super().__init__()
             self.srm = srm
-            self.backbone = bb
+            self.fft = fft
+            self.backbone = backbone
 
         def forward(self, x):
-            return self.backbone(self.srm(x))
 
-    return SRMNet(srm_layer, backbone)
+            rgb = x
+            features = [rgb]
+
+            # SRM: some SRM implementations return [rgb || residuals] (6ch)
+            # while others return only residuals (3ch). Normalize to residuals.
+            if self.srm is not None:
+                srm_out = self.srm(rgb)
+                # If SRM returned rgb+residuals, keep only the residual channels
+                if srm_out.shape[1] == 6:
+                    residuals = srm_out[:, 3:, ...]
+                else:
+                    residuals = srm_out
+                features.append(residuals)
+
+            # FFT: some FFT layers return rgb+magnitude (4ch) or just magnitude (1ch)
+            if self.fft is not None:
+                fft_out = self.fft(rgb)
+                if fft_out.shape[1] >= 4:
+                    # assume last channel(s) are magnitude(s)
+                    magnitude = fft_out[:, -1:, ...]
+                else:
+                    magnitude = fft_out
+                features.append(magnitude)
+
+            x = torch.cat(features, dim=1)
+
+            return self.backbone(x)
+
+    fft_layer = FFTLayer().to(device) if has_fft else None
+    net = PreprocessNet(srm_layer, fft_layer, backbone)
+    net = _apply_attention(
+        net,
+        arch=arch_label,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
+    )
+    return net
 
 
-def load_model(model_path, device):
+def load_model(
+    model_path,
+    device,
+    attention_head: str = "none",
+    gem_p: float = 3.0,
+    gem_learnable: bool = False,
+    cbam_reduction: int = 16,
+    cbam_kernel: int = 7,
+):
     raw_sd = torch.load(model_path, map_location=device)
 
     # torch.compile wraps every key with "_orig_mod."
@@ -105,7 +345,8 @@ def load_model(model_path, device):
         raw_sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}
 
     # Detect if SRM wrapper was used
-    has_srm = any(k.startswith("backbone.") for k in raw_sd)
+    has_srm = any("srm" in k.lower() for k in raw_sd)
+    has_fft = any("fft" in k.lower() or "FFT" in k.lower() for k in raw_sd)
 
     # Detect ConvNeXt
     is_convnext = any("features." in k for k in raw_sd)
@@ -137,9 +378,22 @@ def load_model(model_path, device):
 
     fc_label = "Sequential(Dropout+Linear)" if sequential_fc else "Linear"
 
-    if has_srm:
-        print(f"Detected SRM checkpoint — rebuilding SRMNet ({arch}, FC: {fc_label}).")
-        model = _build_srm_net(device, arch=arch, sequential_fc=sequential_fc)
+    if has_srm or has_fft:
+        print(f"Detected preprocessing: SRM={has_srm} FFT={has_fft}")
+        print(f"Detected SRM/FFT checkpoint — rebuilding PreprocessNet ({arch}, FC: {fc_label}).")
+
+        model = _build_srm_net(
+            device,
+            arch=arch,
+            sequential_fc=sequential_fc,
+            has_srm=has_srm,
+            has_fft=has_fft,
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
+        )
 
     elif arch == "convnext_tiny":
         print("Detected plain ConvNeXt-Tiny checkpoint.")
@@ -148,6 +402,15 @@ def load_model(model_path, device):
         model.classifier[2] = (
             nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
             if sequential_fc else nn.Linear(in_feat, 3)
+        )
+        model = _apply_attention(
+            model,
+            arch="convnext_tiny",
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
         )
 
     elif arch == "convnext_small":
@@ -158,6 +421,15 @@ def load_model(model_path, device):
             nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
             if sequential_fc else nn.Linear(in_feat, 3)
         )
+        model = _apply_attention(
+            model,
+            arch="convnext_small",
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
+        )
 
     elif arch == "resnet50":
         print("Detected plain ResNet50 checkpoint.")
@@ -166,6 +438,15 @@ def load_model(model_path, device):
         model.fc = (
             nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
             if sequential_fc else nn.Linear(in_feat, 3)
+        )
+        model = _apply_attention(
+            model,
+            arch="resnet50",
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
         )
 
     else:
@@ -176,18 +457,47 @@ def load_model(model_path, device):
             nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
             if sequential_fc else nn.Linear(in_feat, 3)
         )
+        model = _apply_attention(
+            model,
+            arch="resnet18",
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
+        )
 
-    model.load_state_dict(raw_sd)
+    model.load_state_dict(raw_sd, strict=False)
     model.to(device)
     model.eval()
 
     return model
 
-def run_evaluation(model_path, data_dir, batch_size=64, save_dir="../results"):
+
+def run_evaluation(
+    model_path,
+    data_dir,
+    batch_size=64,
+    save_dir="../results",
+    attention_head: str = "none",
+    gem_p: float = 3.0,
+    gem_learnable: bool = False,
+    cbam_reduction: int = 16,
+    cbam_kernel: int = 7,
+):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
     print(f"Loading model from: {model_path}")
-    model = load_model(model_path, device)
+    print(f"Attention head: {attention_head}")
+    model = load_model(
+        model_path,
+        device,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
+    )
 
     dataset = DeepfakeDataset(data_dir, transform=val_transform)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
@@ -237,15 +547,61 @@ if __name__ == "__main__":
                             'Defaults to results/<run_id>/ derived from --model_path, '
                             'or results/ if no run ID is found in the checkpoint path.'
                         ))
+    parser.add_argument(
+        '--attention_head',
+        type=str,
+        default=None,
+        choices=['none', 'gem', 'cbam'],
+        help='Attention head used during training. '
+             'If omitted, will be inferred from training_summary.json when available.',
+    )
+    parser.add_argument('--gem_p', type=float, default=None,
+                        help='GeM pooling exponent p (overrides summary if set)')
+    parser.add_argument('--gem_learnable', action='store_true',
+                        help='Use learnable GeM exponent p (overrides summary if set)')
+    parser.add_argument('--cbam_reduction', type=int, default=None,
+                        help='CBAM channel reduction ratio (overrides summary if set)')
+    parser.add_argument('--cbam_kernel', type=int, default=None,
+                        help='CBAM spatial attention kernel size, 3 or 7 (overrides summary if set)')
+
     args = parser.parse_args()
 
     # Auto-derive save_dir from the checkpoint path when not explicitly set.
     save_dir = os.path.abspath(args.save_dir) if args.save_dir else _derive_save_dir(args.model_path)
     print(f"Results will be saved to: {save_dir}")
 
+    # Try to infer attention configuration from training summary when not provided.
+    summary_path = os.path.join(save_dir, "training_summary.json")
+    summary_cfg = {}
+    if os.path.isfile(summary_path):
+        try:
+            with open(summary_path, "r") as f:
+                data = json.load(f)
+            summary_cfg = data.get("config", {})
+            print(f"Loaded attention config from {summary_path}")
+        except Exception as e:
+            print(f"Warning: failed to read {summary_path}: {e}")
+
+    def _cfg_or(default, cli_value, key):
+        if cli_value is not None:
+            return cli_value
+        return summary_cfg.get(key, default)
+
+    attention_head = args.attention_head if args.attention_head is not None else summary_cfg.get("attention_head", "none")
+    gem_p = _cfg_or(3.0, args.gem_p, "gem_p")
+    # gem_learnable stored as bool; CLI flag only enables it.
+    gem_learnable = summary_cfg.get("gem_learnable", False) or args.gem_learnable
+    cbam_reduction = _cfg_or(16, args.cbam_reduction, "cbam_reduction")
+    cbam_kernel = _cfg_or(7, args.cbam_kernel, "cbam_kernel")
+
     run_evaluation(
         model_path=args.model_path,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         save_dir=save_dir,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
     )

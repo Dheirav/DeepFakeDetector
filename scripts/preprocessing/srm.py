@@ -110,7 +110,7 @@ class SRMLayer(nn.Module):
         return torch.cat([x, residuals], dim=1)   # [B, 6, H, W]
 
 
-def adapt_conv1_for_srm(conv1: nn.Conv2d) -> nn.Conv2d:
+def adapt_conv1_for_srm(conv1: nn.Conv2d, in_channels: int = 6) -> nn.Conv2d:
     """
     Replace a 3-channel Conv2d (ResNet's conv1) with a 6-channel version, preserving
     the pretrained weights for the original RGB channels.
@@ -127,17 +127,40 @@ def adapt_conv1_for_srm(conv1: nn.Conv2d) -> nn.Conv2d:
         A new nn.Conv2d(6, 64, ...) with the original weights preserved and
         the residual-channel weights initialised to 0.1× the RGB weights.
     """
-    out_ch, _, kH, kW = conv1.weight.shape   # [64, 3, 7, 7]
+    out_ch, old_in_ch, kH, kW = conv1.weight.shape   # e.g. [64, 3, 7, 7]
+
+    # If already matches requested input channels, return as-is.
+    if old_in_ch == in_channels:
+        return conv1
+
     new_conv = nn.Conv2d(
-        6, out_ch,
+        in_channels, out_ch,
         kernel_size=conv1.kernel_size,
         stride=conv1.stride,
         padding=conv1.padding,
         bias=conv1.bias is not None,
     )
     with torch.no_grad():
-        new_conv.weight[:, :3] = conv1.weight          # pretrained RGB weights
-        new_conv.weight[:, 3:] = conv1.weight * 0.1   # small init for residual channels
+        # Prefer the first three channels as RGB weights when available.
+        if old_in_ch >= 3:
+            rgb_weights = conv1.weight[:, :3, ...]
+        elif old_in_ch == 1:
+            rgb_weights = conv1.weight.repeat(1, 3, 1, 1)
+        else:
+            # As a last resort, tile/truncate to 3 channels
+            rgb_weights = conv1.weight.repeat(1, (3 + old_in_ch - 1) // old_in_ch, 1, 1)[:, :3, ...]
+
+        # Assign pretrained RGB weights for the first three input channels
+        new_conv.weight[:, :3, ...] = rgb_weights
+
+        # Initialise any extra channels (residual / FFT) to a small multiple
+        # of the pretrained RGB weights so they start as a small correction.
+        if in_channels > 3:
+            extra = in_channels - 3
+            fill = rgb_weights[:, :1, ...].repeat(1, extra, 1, 1) * 0.1
+            new_conv.weight[:, 3:, ...] = fill
+
         if conv1.bias is not None:
             new_conv.bias.copy_(conv1.bias)
+
     return new_conv
