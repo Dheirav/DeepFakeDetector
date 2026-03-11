@@ -1,0 +1,33 @@
+{
+  "best_val_acc": 0.8704,
+  "epochs_trained": 26,
+  "final_train_acc": 0.987,
+  "final_val_acc": 0.8572,
+  "config": {
+    "epochs": 50,
+    "batch_size": 64,
+    "lr": 0.0001,
+    "optimizer": "adam",
+    "weight_decay": 0.0001,
+    "loss_type": "weighted_focal",
+    "use_srm": true,
+    "use_fft": false,
+    "label_smoothing": 0.1,
+    "seed": 42,
+    "class_weights": [
+      1.5,
+      1.0,
+      1.5
+    ],
+    "dropout_p": 0.4,
+    "lr_schedule": "cosine",
+    "backbone": "resnet50",
+    "focal_gamma": 2.0,
+    "augment": "light",
+    "attention_head": "none",
+    "gem_p": 3.0,
+    "gem_learnable": false,
+    "cbam_reduction": 16,
+    "cbam_kernel": 7
+  }
+}

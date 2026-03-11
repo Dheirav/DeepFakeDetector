@@ -1,0 +1,18 @@
+{
+  "best_val_acc": 0.828,
+  "epochs_trained": 15,
+  "final_train_acc": 0.9887,
+  "final_val_acc": 0.8259,
+  "config": {
+    "epochs": 30,
+    "batch_size": 64,
+    "lr": 0.0001,
+    "optimizer": "adam",
+    "weight_decay": 0.0001,
+    "loss_type": "weighted_focal",
+    "use_srm": true,
+    "label_smoothing": 0.1,
+    "seed": 42
+  },
+  "run_id": "resnet18_srm_focal_wd"
+}

@@ -1,0 +1,22 @@
+{
+  "best_val_acc": 0.8252,
+  "epochs_trained": 20,
+  "final_train_acc": 0.9889,
+  "final_val_acc": 0.8222,
+  "config": {
+    "epochs": 20,
+    "batch_size": 64,
+    "lr": 0.0001,
+    "optimizer": "adam",
+    "weight_decay": 0.0001,
+    "loss_type": "weighted_focal",
+    "use_srm": true,
+    "label_smoothing": 0.1,
+    "seed": 42,
+    "class_weights": [
+      2.0,
+      0.8,
+      1.5
+    ]
+  }
+}
