@@ -285,6 +285,9 @@ def _build_srm_net(
             self.fft = fft
             self.backbone = backbone
 
+            # Expected input channels for the backbone's first conv (filled later)
+            self.expected_in_channels = None
+
         def forward(self, x):
 
             rgb = x
@@ -313,10 +316,47 @@ def _build_srm_net(
 
             x = torch.cat(features, dim=1)
 
+            # If backbone was trained with extra channels (e.g. RGB+SRM+FFT=7)
+            # but our preprocessing produced fewer channels, pad with zeros so
+            # the tensor shape matches the backbone's expected input channels.
+            if getattr(self, "expected_in_channels", None) is not None:
+                cur_ch = x.shape[1]
+                req_ch = self.expected_in_channels
+                if cur_ch < req_ch:
+                    pad = req_ch - cur_ch
+                    zeros = torch.zeros(x.size(0), pad, x.size(2), x.size(3), device=x.device, dtype=x.dtype)
+                    x = torch.cat([x, zeros], dim=1)
+                elif cur_ch > req_ch:
+                    x = x[:, :req_ch, ...]
+
             return self.backbone(x)
 
     fft_layer = FFTLayer().to(device) if has_fft else None
     net = PreprocessNet(srm_layer, fft_layer, backbone)
+    # Determine backbone's first conv expected input channels and record it
+    try:
+        target = backbone
+        model_conv = None
+        if hasattr(target, "features"):
+            try:
+                stem = target.features[0][0]
+            except Exception:
+                stem = target.features[0]
+            if hasattr(stem, "conv") and isinstance(stem.conv, nn.Conv2d):
+                model_conv = stem.conv
+            elif isinstance(stem, (nn.Sequential,)):
+                for i, m in enumerate(stem):
+                    if isinstance(m, nn.Conv2d):
+                        model_conv = m
+                        break
+            elif isinstance(stem, nn.Conv2d):
+                model_conv = stem
+        if model_conv is None and hasattr(target, "conv1") and isinstance(target.conv1, nn.Conv2d):
+            model_conv = target.conv1
+        if model_conv is not None:
+            net.expected_in_channels = model_conv.weight.shape[1]
+    except Exception:
+        pass
     net = _apply_attention(
         net,
         arch=arch_label,
@@ -466,6 +506,87 @@ def load_model(
             cbam_reduction=cbam_reduction,
             cbam_kernel=cbam_kernel,
         )
+
+    # If checkpoint's first conv expects a different number of input channels
+    # (e.g. RGB + SRM + FFT = 7) adapt the constructed model's stem conv to match
+    # so weights can be loaded without size-mismatch errors.
+    try:
+        ckpt_in_ch = None
+        # common checkpoint keys for first conv in various backbones
+        for k, v in raw_sd.items():
+            if k.endswith("features.0.0.weight") or k.endswith("backbone.features.0.0.weight"):
+                ckpt_in_ch = v.shape[1]
+                break
+            if k.endswith("conv1.weight") or k.endswith("backbone.conv1.weight"):
+                ckpt_in_ch = v.shape[1]
+                break
+
+        if ckpt_in_ch is not None:
+            # operate on the real backbone when wrapped by PreprocessNet
+            target = model.backbone if hasattr(model, "backbone") else model
+
+            # locate model's first conv module for common backbones
+            model_conv = None
+            # ConvNeXt-style: target.features[0][0] or target.features[0]
+            if hasattr(target, "features"):
+                try:
+                    stem = target.features[0][0]
+                except Exception:
+                    stem = target.features[0]
+                if hasattr(stem, "conv") and isinstance(stem.conv, nn.Conv2d):
+                    model_conv = stem.conv
+                elif isinstance(stem, (nn.Sequential,)):
+                    for i, m in enumerate(stem):
+                        if isinstance(m, nn.Conv2d):
+                            model_conv = m
+                            break
+                elif isinstance(stem, nn.Conv2d):
+                    model_conv = stem
+
+            # ResNet-style
+            if model_conv is None and hasattr(target, "conv1") and isinstance(target.conv1, nn.Conv2d):
+                model_conv = target.conv1
+
+            # Adapt if mismatch
+            if model_conv is not None:
+                model_in_ch = model_conv.weight.shape[1]
+                if model_in_ch != ckpt_in_ch:
+                    # prefer SRM-specific adaptor when adapting to 6 channels
+                    if ckpt_in_ch == 6:
+                        new_conv = adapt_conv1_for_srm(model_conv, in_channels=6)
+                    else:
+                        new_conv = _adapt_conv1_generic(model_conv, ckpt_in_ch)
+
+                    # place adapted conv back into the target backbone (handle a few shapes)
+                    replaced = False
+                    if hasattr(target, "features"):
+                        try:
+                            if hasattr(target.features[0][0], "conv") and isinstance(target.features[0][0].conv, nn.Conv2d):
+                                target.features[0][0].conv = new_conv
+                                replaced = True
+                        except Exception:
+                            pass
+                        if not replaced:
+                            # try to replace first Conv2d inside features[0]
+                            try:
+                                stem = target.features[0]
+                                for i, m in enumerate(stem):
+                                    if isinstance(m, nn.Conv2d):
+                                        stem[i] = new_conv
+                                        replaced = True
+                                        break
+                            except Exception:
+                                pass
+                    if not replaced and hasattr(target, "conv1"):
+                        target.conv1 = new_conv
+
+                    # ensure PreprocessNet knows the backbone's expected channels
+                    if hasattr(model, "expected_in_channels"):
+                        model.expected_in_channels = ckpt_in_ch
+
+    except Exception:
+        # best-effort adaptation — if anything goes wrong, continue to loading
+        pass
 
     model.load_state_dict(raw_sd, strict=False)
     model.to(device)

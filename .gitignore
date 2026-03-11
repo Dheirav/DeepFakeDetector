@@ -53,8 +53,16 @@ dataset_builder/output/artifacts/*/
 models/
 
 # ── Results / evaluation outputs ─────────────────────────────────────────────
-# Includes profiler traces (many MB), confusion matrix PNGs, metrics CSVs.
+# Most evaluation outputs are large; ignore them by default.
 results/
+# Keep the small comparison summaries under version control so comparisons
+# can be reviewed and committed. Re-include the folder and its files.
+!results/comparison/
+!results/comparison/**
+# Still ignore heavy artifacts (profiler traces, tensorboard logs) inside
+# the results tree — these remain large and should not be committed.
+results/**/tensorboard/
+results/**/profiler*
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 logs/
