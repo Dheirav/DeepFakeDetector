@@ -858,7 +858,7 @@ See [dataset_builder/README.md](dataset_builder/README.md) for full usage, confi
 
 ## Documentation
 - [Dataset Builder Pipeline](dataset_builder/README.md)
-- [Project Documentation](PROJECT_DOCUMENTATION.md)
+- Project Documentation
 
 ## License
 See LICENSE file.

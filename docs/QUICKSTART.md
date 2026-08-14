@@ -113,5 +113,5 @@ Monitor GPU: `watch -n 1 nvidia-smi`
 
 - Dataset design and sources: [DATASET.md](DATASET.md)
 - Pipeline internals: [dataset_builder/README.md](../dataset_builder/README.md)
-- Training guide: [TRAINING_GUIDE.md](TRAINING_GUIDE.md)
+- Training guide: TRAINING_GUIDE.md
 - Full project docs: [README.md](../README.md)
