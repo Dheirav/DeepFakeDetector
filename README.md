@@ -118,7 +118,7 @@ pip install -r requirements.txt
 ### 2. Dataset
 
 The dataset is fully constructed in `dataset_builder/train/`, `dataset_builder/val/`, and `dataset_builder/test/`.
-See [DATASET.md](DATASET.md) for the full breakdown (77,865 images, 0.52% max class imbalance) and
+See [DATASET.md](docs/DATASET.md) for the full breakdown (77,865 images, 0.52% max class imbalance) and
 [dataset_builder/README.md](dataset_builder/README.md) for pipeline documentation.
 
 > **Note:** Dataset images are excluded from git (see `.gitignore`). Model checkpoints and results are also local-only. Re-train using the commands below or download a checkpoint separately.
@@ -499,7 +499,7 @@ Edit `scripts/preprocessing/preprocessing.py` to add Albumentations transforms.
 
 ## 📚 Documentation
 
-- [DATASET.md](DATASET.md) — Dataset design specification and sampling strategy
+- [DATASET.md](docs/DATASET.md) — Dataset design specification and sampling strategy
 - [dataset_builder/README.md](dataset_builder/README.md) — Complete pipeline documentation
 - [scripts/data/README.md](scripts/data/README.md) — Legacy data utilities
 - [scripts/dataloader/README.md](scripts/dataloader/README.md) — PyTorch dataset and dataloader

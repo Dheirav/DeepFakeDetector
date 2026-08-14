@@ -226,7 +226,7 @@ All intermediate and final artifacts are written to the configured `artifacts_di
 - `audit_report.json`: Compliance and quality audit report
 - `pipeline.log`: Full execution log
 
-See [dataset_builder/README.md](dataset_builder/README.md) for complete documentation.
+See [dataset_builder/README.md](../dataset_builder/README.md) for complete documentation.
 
 ---
 

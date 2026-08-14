@@ -1,0 +1,11 @@
+# DeepFakeDetector documentation
+
+Working notes and reference material. Start from the [project README](../README.md).
+
+- [BACKBONE_COMPATIBILITY.md](BACKBONE_COMPATIBILITY.md)
+- [CLEANUP_GUIDE.md](CLEANUP_GUIDE.md)
+- [DATASET.md](DATASET.md)
+- [GRADCAM_COMPARISON.md](GRADCAM_COMPARISON.md)
+- [IMPROVEMENT_PLAN.md](IMPROVEMENT_PLAN.md)
+- [QUICKSTART.md](QUICKSTART.md)
+- [SETUP_INSTRUCTIONS.md](SETUP_INSTRUCTIONS.md)
