@@ -686,7 +686,7 @@ project-root/
 - **Scripts:**
   - `scripts/evaluation/evaluate.py`: Accuracy, precision, recall, F1, confusion matrix
   - `scripts/evaluation/evaluation_matrices.py`: Additional metrics
-  - `scripts/evaluation/plot_confusion.py`, `plot_confusion_matrix.py`: Visualization
+  - `scripts/evaluation/plot_confusion_matrix.py`: Visualization
 - **Usage:**
   - Run after training to assess model performance
   - Save and analyze misclassified images for error analysis
