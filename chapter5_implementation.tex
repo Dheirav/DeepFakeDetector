@@ -1,0 +1,656 @@
+% Chapter 5: Implementation
+\chapter{Implementation}
+\label{chap:implementation}
+
+This chapter details the practical implementation of the multi-class deepfake detection system developed in this project. Building on the methodology outlined in the previous chapter, it explains how the proposed approach was realized in software, which tools and frameworks were used, how the codebase is structured, and how the training and inference pipelines operate in practice. The description is grounded in the actual repository implementation and is intended to be sufficiently detailed to enable full reproducibility of the experiments.
+
+\section{Implementation Overview}
+\label{sec:implementation-overview}
+
+The implementation is organized as an end-to-end pipeline comprising five principal components. First, a \textbf{dataset construction pipeline} ingests heterogeneous raw image collections, performs validation and deduplication, and exports standardized train/validation/test splits. Second, a \textbf{data preprocessing and augmentation} component applies deterministic normalization and configurable augmentation policies to improve robustness to common distortions and distribution shifts. Third, a \textbf{deep learning model training framework} defines configurable backbone architectures, optional preprocessing and attention modules, and an optimized training loop with checkpointing and learning-rate scheduling. Fourth, \textbf{evaluation and analysis modules} execute held-out testing, compute standard classification metrics, and produce artefacts such as confusion matrices for quantitative reporting. Finally, an \textbf{interactive inference and explainability interface} exposes the trained model through a web-based application that supports image upload, prediction visualization, and Grad-CAM explanations for qualitative inspection of model attention.
+
+\section{Software Tools Used}
+\label{sec:software-tools}
+
+The system is implemented in the Python programming language using a modular script-based architecture. Python was selected due to its extensive ecosystem for deep learning, computer vision, and scientific computing, and because it is widely adopted for implementing and evaluating deep neural networks in research and industry.
+
+\subsection{Programming Language and Runtime}
+
+The entirety of the training, evaluation and data processing pipeline is written in \textbf{Python~3.8+}. The repository includes a \texttt{requirements.txt} file that specifies the Python packages required to reproduce the environment. The implementation assumes a Unix-like operating system (e.g.\ Linux or WSL2), which is reflected in the shell commands and monitoring tools used in the documentation (such as \texttt{htop} and \texttt{nvidia-smi}).
+
+Python was chosen for three main reasons:
+\begin{itemize}
+  \item It provides seamless integration with leading deep learning frameworks such as PyTorch.
+  \item It offers mature libraries for image processing, scientific computing and experiment tracking (e.g.\ OpenCV, NumPy, pandas, TensorBoard).
+  \item Its dynamic and high-level nature facilitates rapid prototyping of research ideas and straightforward scripting of experiments.
+\end{itemize}
+
+\subsection{Deep Learning Framework}
+
+The core deep learning framework used is \textbf{PyTorch} (\texttt{torch}), together with \textbf{TorchVision} (\texttt{torchvision}) for vision backbones. These tools provide tensor operations, automatic differentiation, GPU acceleration, and access to pretrained architectures that are adapted for the three-class deepfake classification task. Detailed usage of each library within the training and evaluation pipeline is described in Section~\ref{sec:libraries}.
+
+\subsection{Computer Vision and Image Processing Tools}
+
+Two complementary computer vision toolchains are used:
+
+\paragraph{OpenCV (opencv-python).}
+The dataset loader implementation uses the \texttt{opencv-python} package for efficient image I/O. Images are loaded from disk and converted from BGR to RGB prior to augmentation, enabling high-throughput training on large-scale datasets.
+
+\paragraph{Pillow (PIL).}
+The Pillow library is used in two contexts:
+\begin{itemize}
+  \item In a legacy dataset loader variant that follows a TorchVision-style API using PIL images and \texttt{torchvision.transforms}.
+  \item In the interactive inference interface, where uploaded images are validated, optionally cropped, and visualized as part of the user-facing workflow.
+\end{itemize}
+
+The combination of OpenCV and Pillow allows the project to balance low-level efficiency (OpenCV) with high-level user interface integration (Pillow).
+
+\subsection{Scientific Computing and Data Handling}
+
+The implementation relies heavily on \textbf{NumPy} and \textbf{pandas}:
+\begin{itemize}
+  \item \textbf{NumPy} is used for array operations, numerical computations, and serialization of predictions and labels for downstream analysis.
+  \item \textbf{pandas} is used extensively within the dataset construction pipeline to manage indices and manifests across stages such as validation, deduplication, sampling, and split assignment.
+\end{itemize}
+
+\subsection{Machine Learning Utilities}
+
+The project employs \textbf{scikit-learn} for metrics and evaluation utilities and \textbf{Matplotlib} for visualization:
+\begin{itemize}
+  \item \textbf{scikit-learn} provides standard classification metrics and reports (precision, recall, F1-score, and confusion matrices) for quantitative evaluation.
+  \item \textbf{Matplotlib} is used to generate training diagnostics (e.g.\ loss and accuracy curves) and evaluation figures (e.g.\ confusion matrices) suitable for academic reporting.
+\end{itemize}
+
+\subsection{Experiment Tracking and Configuration Tools}
+
+Two important tools for experiment tracking in this project are \textbf{TensorBoard} and \textbf{PyYAML}:
+\begin{itemize}
+  \item \textbf{TensorBoard}: the primary training module logs training/validation metrics and, optionally, profiler traces to support experiment monitoring and performance diagnosis.
+  \item \textbf{PyYAML}: experiment configurations are stored in YAML files that capture hyperparameters and paths, enabling reproducible execution and systematic sweeps.
+\end{itemize}
+
+\subsection{User Interface and Explainability Tools}
+
+The user-facing inference and explainability interface is implemented using \textbf{Streamlit} and a dedicated Grad-CAM module:
+\begin{itemize}
+  \item \textbf{Streamlit}: the interactive inference interface supports image upload, optional cropping, model selection, and visualization of predictions.
+  \item \textbf{Grad-CAM}: an explainability module computes class-specific saliency heatmaps and overlays them on the input image to support qualitative interpretation of model decisions.
+\end{itemize}
+
+\subsection{System and Hardware Monitoring}
+
+To ensure stable and efficient training, the project incorporates \textbf{psutil} and \textbf{pynvml}:
+\begin{itemize}
+  \item \textbf{psutil} is used to query the host system's CPU utilization and RAM usage at the beginning of each training epoch. These metrics are printed to the console and logged to TensorBoard.
+  \item \textbf{pynvml} provides access to GPU memory usage and utilization rates through NVIDIA's Management Library; the primary training module logs per-epoch GPU statistics when available.
+\end{itemize}
+
+These monitoring tools allow the researcher to adjust batch sizes, numbers of workers and other performance-sensitive parameters to the specific hardware configuration.
+
+\subsection{Development Environment and Version Control}
+
+The repository is a Git-managed project. The top-level \texttt{README.md} describes the directory structure, quick-start commands, and recommended workflows. Although the specific integrated development environment is not fixed, the project layout and the use of \texttt{requirements.txt} are compatible with common Python IDEs (e.g.\ VS~Code, PyCharm) and command-line environments. Version control with Git facilitates collaborative development, rollback of changes, and precise tracking of experiment-related modifications.
+
+\section{Libraries and Frameworks}
+\label{sec:libraries}
+
+This section consolidates the major libraries and frameworks employed in the implementation and describes their roles in the end-to-end pipeline. To avoid redundancy, each library is described here in detail; Section~\ref{sec:software-tools} provides only a high-level overview of the toolchain.
+
+\subsection{PyTorch and TorchVision}
+
+PyTorch (\texttt{torch}) is the core deep learning framework that underpins the model training and inference code. Its module system (\texttt{torch.nn.Module}), automatic differentiation and CUDA integration make it particularly well suited to research-oriented experimentation.
+
+TorchVision (\texttt{torchvision}) is used primarily for its pretrained models. In the primary training module, a backbone construction function instantiates different architectures depending on configuration:
+\begin{itemize}
+  \item \textbf{ResNet18} and \textbf{ResNet50}: classical convolutional backbones with residual connections. The script imports \texttt{ResNet18\_Weights} and \texttt{ResNet50\_Weights} to obtain default ImageNet-pretrained weights, and then replaces \texttt{m.fc} with a classifier whose output dimension equals the number of classes (three in this project).
+  \item \textbf{ConvNeXt-Tiny} and \textbf{ConvNeXt-Small}: modern convolutional architectures with a transformer-like design. The classification head at \texttt{m.classifier[2]} is replaced with a new linear or \texttt{Dropout+Linear} head.
+  \item \textbf{EfficientNet-B3}: a parameter-efficient CNN architecture. The classifier \texttt{m.classifier[1]} is replaced analogously.
+  \item \textbf{ViT-B/16}: a vision transformer model where the \texttt{heads.head} module is replaced by a new classifier head.
+\end{itemize}
+
+Beyond model definition, PyTorch is also responsible for:
+\begin{itemize}
+  \item Implementing loss functions (via \texttt{torch.nn} and \texttt{torch.nn.functional}) and optimizers (via \texttt{torch.optim}).
+  \item Handling device placement (CPU vs.\ GPU) and automatic mixed precision (\texttt{torch.amp.autocast} and \texttt{torch.amp.GradScaler}).
+  \item Providing learning-rate schedulers such as \texttt{CosineAnnealingWarmRestarts} and \texttt{ReduceLROnPlateau}.
+\end{itemize}
+
+In summary, nearly all components of the training and inference pipeline---from data loading (\texttt{torch.utils.data.DataLoader}) to model training and evaluation---depend on PyTorch and TorchVision.
+
+\subsection{Albumentations}
+
+Albumentations is used to define rich and configurable data augmentation pipelines in the preprocessing module. Three training pipelines and one validation pipeline are defined:
+\begin{itemize}
+  \item \textbf{Light augmentation} (\texttt{train\_transform\_light}): resizes images to $224\times 224$, applies random horizontal flips with probability 0.5, normalizes pixel intensities, and converts to PyTorch tensors. This configuration is intended for quick sanity-check experiments.
+  \item \textbf{Standard augmentation} (\texttt{train\_transform}): in addition to resize and flip, it incorporates random rotations (up to 15 degrees), random brightness and contrast adjustments, and moderate JPEG compression (\texttt{A.ImageCompression} with quality range 30--100 and probability 0.4). This strikes a balance between robustness and preservation of the original signal.
+  \item \textbf{Strong augmentation} (\texttt{train\_transform\_strong}): extends the standard pipeline with stronger compression (quality range 20--95, probability 0.5), stochastic noise injection (\texttt{A.GaussNoise} or \texttt{A.ISONoise}), and slight blurring (\texttt{A.GaussianBlur} or \texttt{A.MedianBlur}). This is specifically designed to reduce over-reliance on compression artifacts and to force the model to learn more intrinsic cues related to the Real versus AI~Edited boundary.
+  \item \textbf{Validation transform} (\texttt{val\_transform}): a deterministic pipeline that only resizes, normalizes and converts to tensors, ensuring that validation performance reflects the model's generalization without augmentation noise.
+\end{itemize}
+
+The function \texttt{get\_train\_transform(mode)} selects among the light, standard and strong pipelines based on a simple string argument, which is wired into the training configuration (command-line flags and YAML). These pipelines are used in conjunction with the \texttt{DeepfakeDataset} class to preprocess images on-the-fly during mini-batch creation.
+
+\subsection{OpenCV}
+
+OpenCV (\texttt{opencv-python}) is used in the dataset loader implementation for efficient image reading and color conversion. The primary dataset class:
+\begin{itemize}
+  \item Iterates over class-specific directories under a given dataset root.
+  \item For each image file, loads it via \texttt{cv2.imread} and converts from BGR to RGB with \texttt{cv2.cvtColor}.
+  \item Applies an Albumentations transform (if provided) and returns the resulting tensor along with a label tensor.
+\end{itemize}
+
+The rationale for using OpenCV instead of PIL in this context is its speed and robustness when handling large datasets, as well as its tight integration with NumPy arrays, which Albumentations expects as input.
+
+\subsection{NumPy, pandas and Matplotlib}
+
+NumPy, pandas and Matplotlib collectively support data handling and visualization:
+\begin{itemize}
+  \item \textbf{NumPy} is used to store labels and predictions as arrays. For example, in \texttt{evaluate.py}, predictions and ground-truth labels are appended to Python lists and then converted to NumPy arrays \texttt{y\_true} and \texttt{y\_pred}, which are saved to \texttt{.npy} files. This representation facilitates downstream analyses and visualization.
+  \item \textbf{pandas} is primarily used within the dataset builder pipeline to represent manifest tables (such as \texttt{export\_index.csv}). Each stage in the pipeline (indexing, validation, deduplication, sampling, splitting, exporting, auditing) manipulates DataFrames to add or filter entries, keeping all intermediate states auditable and reproducible.
+  \item \textbf{Matplotlib} is used to produce graphics for model training diagnostics and evaluation: loss and accuracy curves are generated and saved in the results directory of each run, and confusion matrices are rendered by \texttt{plot\_confusion\_matrix.py}. These plots provide visual summaries that are directly suitable for inclusion in the thesis.
+\end{itemize}
+
+\subsection{scikit-learn}
+
+scikit-learn (sklearn) provides the metrics used to quantify classification performance. In particular:
+\begin{itemize}
+  \item \texttt{classification\_report} and \texttt{confusion\_matrix} are called in \texttt{evaluate.py} to generate textual summaries of performance over the test set. The report includes per-class precision, recall and F1-score, as well as macro and weighted averages.
+  \item \texttt{sklearn.metrics.f1\_score} is imported and used in \texttt{train\_full.py} to compute macro F1 and per-class F1 on the validation set at the end of each epoch. These values are logged to TensorBoard and to the per-epoch CSV file.
+\end{itemize}
+
+By relying on well-tested implementations of these metrics, the project avoids subtle errors in custom metric code and ensures that the reported numbers are directly comparable to other works in the literature.
+
+\subsection{TensorBoard, PyYAML and System Monitoring}
+
+TensorBoard and PyYAML have already been discussed above. Additionally, psutil and pynvml play important roles:
+\begin{itemize}
+  \item psutil queries CPU utilization and memory usage. In \texttt{train\_full.py}, these values are collected once per epoch and logged as scalar summaries, making it easy to diagnose CPU bottlenecks or memory pressure.
+  \item pynvml queries GPU statistics (memory usage and utilization rates). These are logged as part of the same per-epoch resource monitoring block. By inspecting these logs, the researcher can verify whether the GPU is being fully utilized and whether batch sizes are appropriate for the available VRAM.
+\end{itemize}
+
+Together, these libraries enable a comprehensive view of both model-level and system-level behavior during training.
+
+\section{Hardware Requirements}
+\label{sec:hardware}
+
+The implementation is designed to run efficiently on modern, but not necessarily high-end, hardware. The \texttt{README.md} outlines recommended parameter settings for entry-level, mid-range and high-end systems, indicating that the authors explicitly tuned the pipeline to a range of configurations.
+
+\subsection{CPU and RAM}
+
+The CPU is used for:
+\begin{itemize}
+  \item Data loading, augmentation and assembly of mini-batches via PyTorch's \texttt{DataLoader}.
+  \item Execution of control logic in the training and evaluation scripts.
+  \item Metric computation, logging, and serialization of training artifacts.
+\end{itemize}
+
+While the exact CPU model is not specified, the use of multiple DataLoader workers (two by default in \texttt{get\_data\_loaders}) suggests a multi-core CPU. The recommended configurations in the documentation assume:
+\begin{itemize}
+  \item At least 8~GB of RAM for entry-level setups.
+  \item 16~GB or more RAM for mid-range and high-end setups, enabling higher batch sizes and more simultaneous processes (e.g.\ TensorBoard, Streamlit UI).
+\end{itemize}
+
+\subsection{GPU and VRAM}
+
+The code is GPU-aware but can fall back to CPU if no GPU is available. Device selection is implemented as:
+\begin{quote}
+  \texttt{device = "cuda" if torch.cuda.is\_available() else "cpu"}
+\end{quote}
+
+Mixed-precision training via \texttt{torch.amp.autocast} and \texttt{GradScaler} is enabled when a CUDA device is detected. The documentation suggests the following approximate configurations:
+\begin{itemize}
+  \item \emph{Entry-level systems} (integrated GPU or low VRAM $<2$~GB): batch sizes of 8--16, 10--15 epochs, and a single DataLoader worker.
+  \item \emph{Mid-range systems} (e.g.\ GTX~1650/3050 with 4~GB VRAM, 8--16~GB RAM): batch sizes of 16--32, 15--20 epochs, and two workers.
+  \item \emph{High-end systems} (e.g.\ RTX~4060/4070 with 8~GB+ VRAM, 16~GB+ RAM): batch sizes up to 64, 30 or more epochs, and two to four workers.
+\end{itemize}
+
+These guidelines reflect empirical tuning for stability (avoiding out-of-memory errors) and performance (sufficient GPU utilization without CPU bottlenecks).
+
+\subsection{Storage Requirements}
+
+The dataset builder documentation reports a final dataset size of 77\,865 images distributed across three classes with very minor imbalance ($0.52\%$). At typical JPEG resolutions and compression levels, the storage requirement for the dataset is on the order of tens of gigabytes. Additional storage is required for:
+\begin{itemize}
+  \item Model checkpoints in \texttt{models/}, including per-epoch checkpoints and best-model files.
+  \item Training logs and TensorBoard event files in \texttt{results/} and \texttt{logs/}.
+  \item Evaluation outputs such as confusion matrices and Grad-CAM overlays.
+\end{itemize}
+
+As a result, a modern SSD with at least 100~GB of free space is more than sufficient to reproduce all experiments.
+
+\subsection{Operating System}
+
+The implementation and documentation assume a Unix-like operating system. Examples throughout the \texttt{README.md} use Bash commands, and monitoring is described using Unix tools such as \texttt{htop} and \texttt{watch -n 1 nvidia-smi}. The project has been tested on Linux and is compatible with WSL2 on Windows.
+
+\subsection{Suitability for Deep Learning}
+
+The chosen hardware setup is suitable for deep learning for several reasons:
+\begin{itemize}
+  \item GPU acceleration drastically reduces the time required to train convolutional backbones such as ResNet and ConvNeXt, especially when combined with automatic mixed precision.
+  \item cuDNN auto-tuning (enabled via \texttt{torch.backends.cudnn.benchmark = true}) finds the most efficient convolution algorithms for the fixed input size ($224\times 224$), reducing per-iteration overhead.
+  \item The early stopping mechanism and learning-rate schedulers ensure that training can be terminated when validation performance plateaus, avoiding unnecessary computation.
+\end{itemize}
+
+In summary, while the code can be executed on CPU-only systems for testing and development, meaningful training of the final models relies on access to a CUDA-enabled GPU.
+
+\section{Codebase Structure and Modules}
+\label{sec:structure}
+
+The repository is carefully structured to separate concerns between dataset construction, preprocessing, data loading, training, evaluation, explainability and user-facing inference. This section describes the organization and purpose of each major module.
+
+\subsection{Top-Level Organization}
+
+The top-level \texttt{README.md} lists the main directories:
+\begin{itemize}
+  \item \texttt{dataset\_builder/}: production-grade, deterministic dataset builder pipeline, as well as the built dataset (train/val/test).
+  \item \texttt{scripts/}: data preparation, preprocessing, dataset loading, training, evaluation and explainability scripts.
+  \item \texttt{frontend/}: Streamlit-based user interface for inference and Grad-CAM visualization.
+  \item \texttt{models/}: saved model checkpoints.
+  \item \texttt{results/}: experiment outputs, including plots, logs and confusion matrices.
+  \item \texttt{logs/}: log files for training and dataset building runs.
+\end{itemize}
+
+\subsection{Dataset Builder}
+
+The \texttt{dataset\_builder/} directory contains the code and configuration necessary to construct the dataset from 20 different source collections. Its internal structure includes:
+\begin{itemize}
+  \item \texttt{main.py}: a command-line entry point that reads a configuration YAML and executes the full pipeline for a single source or for all sources.
+  \item \texttt{pipeline.py}: orchestrates individual pipeline stages, such as indexing, validation, deduplication, sampling, splitting, exporting and auditing.
+  \item \texttt{config/}: a collection of per-source configuration files (20 in total), specifying targets such as per-class quotas, quality thresholds and split ratios.
+  \item \texttt{modules/}: modular implementations of core pipeline stages:
+  \begin{itemize}
+    \item \texttt{indexer.py}: scans source directories, collecting file paths and basic metadata into an index.
+    \item \texttt{validator.py}: verifies image integrity and filters out images that fail quality or resolution checks.
+    \item \texttt{deduplicator.py}: computes perceptual hashes and removes near-duplicate images to prevent data leakage and over-representation of particular content.
+    \item \texttt{sampler.py}: samples images to meet per-source and per-class quotas while respecting balance constraints.
+    \item \texttt{splitter.py}: performs cluster-aware splitting into train/val/test sets, ensuring that visually similar images do not appear across splits.
+    \item \texttt{exporter.py}: copies selected images into the final dataset folders and writes manifests and checksums.
+    \item \texttt{audit\_dataset.py}: checks that the exported dataset meets the design specifications and logs a detailed audit report.
+  \end{itemize}
+  \item \texttt{scripts/}: helper scripts for downloading and preparing individual sources (e.g.\ COCO, Places365, Synthbuster, DiffusionDB, FaceForensics++).
+  \item \texttt{train/}, \texttt{val/}, \texttt{test/}: the fully constructed dataset, organized into class-specific subfolders.
+\end{itemize}
+
+The input to the builder is a heterogeneous set of raw datasets, while the output is a unified, balanced and clean dataset ready to be consumed by the training scripts.
+
+\subsection{Data Cleaning and Legacy Utilities}
+
+The \texttt{scripts/data/} directory contains simpler scripts intended for smaller, manually curated datasets:
+\begin{itemize}
+  \item \texttt{clean\_dataset.py}: iterates through a directory structure of the form \texttt{data/real}, \texttt{data/ai\_generated}, \texttt{data/ai\_edited}, reporting and optionally removing corrupted or unreadable images.
+  \item \texttt{split\_data.py}: splits such a dataset into train and validation subsets according to a user-specified test size (e.g.\ 20\% for validation).
+  \item \texttt{dataset\_stats.py}: counts images per class and prints dataset statistics for quick inspection.
+\end{itemize}
+
+These utilities are considered ``legacy'' relative to the more sophisticated dataset builder, but they remain useful for small-scale experiments and debugging.
+
+\subsection{Preprocessing}
+
+The \texttt{scripts/preprocessing/} directory contains:
+\begin{itemize}
+  \item \texttt{preprocessing.py}: defines Albumentations-based transforms for training and validation, as described in Section~\ref{sec:libraries}. It also provides a helper function \texttt{get\_train\_transform} to select an augmentation regime at runtime.
+  \item \texttt{fft.py} and \texttt{srm.py}: define the \texttt{FFTLayer} and \texttt{SRMLayer}, respectively. These modules implement, in PyTorch, frequency-domain and spatial rich model filtering layers that emphasize high-frequency artifacts, which are often indicative of manipulations or synthetic generation.
+  \item \texttt{visualize\_augmentations.py}: a script that applies the augmentation pipelines to a given example image and saves the results, allowing qualitative inspection of how the transforms affect input images.
+\end{itemize}
+
+\subsection{Dataset Loading}
+
+The \texttt{scripts/dataloader/} directory defines:
+\begin{itemize}
+  \item \texttt{dataset.py}: the main \texttt{DeepfakeDataset} class. It implements:
+  \begin{itemize}
+    \item A label mapping from class names (\texttt{real}, \texttt{ai\_generated}, \texttt{ai\_edited}) to integer indices (0, 1, 2).
+    \item A constructor that iterates through the class directories under a root directory, collects file paths and labels, and prints warnings if expected class directories are missing.
+    \item A \texttt{\_\_getitem\_\_} method that loads an image with OpenCV, converts it to RGB, applies a transform (if provided), and returns the resulting tensor and label.
+  \end{itemize}
+  \item \texttt{dataset\_loader.py}: a more traditional dataset and loader based on PIL and \texttt{torchvision.transforms}, providing:
+  \begin{itemize}
+    \item A \texttt{DeepfakeDataset} that stores lists of image paths and labels.
+    \item A \texttt{create\_dataloaders} function that splits this dataset into training and validation subsets using scikit-learn's \texttt{train\_test\_split} and returns PyTorch dataloaders.
+    \item A \texttt{print\_dataset\_stats} function that reports the number of images per class.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Training}
+
+The \texttt{scripts/training/} directory contains all training-related code:
+\begin{itemize}
+  \item \textbf{Configuration and documentation:} \texttt{train\_config.yaml} specifies default hyperparameters, and \texttt{README.md} in this directory documents the training scripts, their command-line arguments and recommended workflows.
+  \item \textbf{Baseline training (\texttt{train\_baseline.py}):} a simpler script that uses ResNet18 as a backbone, standard augmentations, a conventional training loop and best-model saving based on validation accuracy. It is intended as a fast, self-contained baseline.
+  \item \textbf{Advanced training (\texttt{train\_full.py}):} the principal training script used for final experiments. It supports:
+  \begin{itemize}
+    \item Backbone selection (ResNet, ConvNeXt, EfficientNet, ViT).
+    \item Optional SRM and FFT preprocessing layers combined via a \texttt{PreprocessNet} wrapper.
+    \item Optional attention heads (GeM pooling and CBAM) injected into the backbone.
+    \item An extensive set of hyperparameters controllable via command-line flags and/or YAML configuration (learning rate, weight decay, class weights, loss type, augmentation strength, early stopping patience, backbone choice, focal loss gamma, etc.).
+    \item Automatic mixed precision and optional \texttt{torch.compile} for kernel fusion and reduced overhead.
+    \item TensorBoard logging, CSV logging of per-epoch metrics, Matplotlib plots of loss and accuracy curves, and JSON summaries of the run configuration and best validation performance.
+  \end{itemize}
+  \item \textbf{Custom losses (\texttt{losses.py}):} provides:
+  \begin{itemize}
+    \item \texttt{FocalLoss}, a PyTorch module implementing the focal loss with optional class weights and label smoothing.
+    \item A factory function \texttt{build\_criterion} that returns one of several loss types: standard cross-entropy (\texttt{"ce"}), weighted cross-entropy (\texttt{"weighted"}), unweighted focal loss (\texttt{"focal"}), or weighted focal loss (\texttt{"weighted\_focal"}). By default, the project uses weighted focal loss with higher weights assigned to the Real and AI~Edited classes to address the empirically observed confusion between these two classes.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Evaluation and Cascaded Classification}
+
+The \texttt{scripts/evaluation/} directory contains:
+\begin{itemize}
+  \item \texttt{evaluate.py}: the main evaluation script. It:
+  \begin{itemize}
+    \item Loads a model checkpoint and reconstructs the corresponding architecture, including SRM/FFT preprocessing and attention heads if they were used during training.
+    \item Instantiates a \texttt{DeepfakeDataset} on the test split (defaulting to \texttt{dataset\_builder/test}) and wraps it in a \texttt{DataLoader}.
+    \item Runs a forward pass over the entire test set, accumulating predictions and ground-truth labels.
+    \item Computes overall accuracy, per-class precision, recall and F1-scores using scikit-learn, and prints a detailed classification report and confusion matrix.
+    \item Saves the labels and predictions as NumPy arrays and organizes results in a run-specific directory under \texttt{results/}.
+  \end{itemize}
+  \item \texttt{evaluation\_matrices.py} and \texttt{plot\_confusion\_matrix.py}: utilities to compute additional metrics and to visualize confusion matrices.
+  \item A set of scripts (\texttt{evaluate\_stage1.py}, \texttt{evaluate\_stage2.py}, \texttt{select\_stage2\_subset.py}, \texttt{merge\_cascade\_results.py}, \texttt{stage2\_confusion.py}) that implement a two-stage cascaded classification scheme. Stage~1 is a three-class model (Real, AI~Generated, AI~Edited), and Stage~2 is a binary model (Real vs AI~Edited) applied only to samples where Stage~1 is uncertain about the distinction between Real and AI~Edited. A custom \texttt{CascadeClassifier} module in \texttt{scripts/modules/cascade\_classifier.py} coordinates this process.
+\end{itemize}
+
+\subsection{Explainability}
+
+The \texttt{scripts/explainability/} directory contains \texttt{grad\_cam.py}, a script that loads a trained model and applies Grad-CAM to specified images. It:
+\begin{itemize}
+  \item Hooks into the last convolutional layer(s) of the network.
+  \item Computes gradients of class scores with respect to feature maps.
+  \item Aggregates gradients and activations into a class-specific saliency map.
+  \item Produces overlay images showing the regions of the input that most strongly influenced the model's decisions.
+\end{itemize}
+
+This script is particularly useful for offline analysis of model behavior and for producing figures that illustrate how the model distinguishes between Real, AI~Generated and AI~Edited inputs.
+
+\subsection{Frontend and Inference}
+
+The \texttt{frontend/} directory contains the code used to deploy the trained models in an interactive web interface:
+\begin{itemize}
+  \item \texttt{config.py}: defines configuration options for the frontend, in particular the default model checkpoint path.
+  \item \texttt{inference.py}: provides functions for:
+  \begin{itemize}
+    \item Loading a checkpoint and reconstructing the appropriate PyTorch model architecture, taking into account the backbone type, presence of SRM preprocessing and the structure of the classifier head (sequential vs linear).
+    \item Preprocessing input images using \texttt{torchvision.transforms} (resize, center-crop, normalization).
+    \item Running inference and converting logits to softmax probabilities.
+  \end{itemize}
+  \item \texttt{gradcam.py}: implements a \texttt{GradCAM} class tailored to the frontend's needs, with functions to generate overlays and comparison panels suitable for display in Streamlit.
+  \item \texttt{app.py}: defines the Streamlit application itself. It:
+  \begin{itemize}
+    \item Exposes a sidebar for specifying the model checkpoint, turning GPU usage on or off, choosing Grad-CAM options (target class, colormap, opacity), and enabling or disabling interactive cropping.
+    \item Lets the user upload an image and, if cropping is enabled, select a region of interest using the \texttt{streamlit-cropper} widget.
+    \item Runs the inference pipeline on the (optionally cropped) image and displays the predicted class and per-class probabilities.
+    \item Computes Grad-CAM for either the predicted class or a user-selected class and displays the resulting heatmaps and overlays, with options to download the generated images.
+  \end{itemize}
+\end{itemize}
+
+Together, these modules provide a complete pathway from trained model checkpoint to an interactive, interpretable deployment environment.
+
+\section{Training Setup}
+\label{sec:training-setup}
+
+This section describes how the training pipeline is implemented in practice, including dataset loading, optimization details, training loops, checkpointing and logging.
+
+\subsection{Dataset Loading Process}
+
+The training scripts operate on datasets that follow a simple directory structure, with three class-specific subfolders under a dataset root: \texttt{real/}, \texttt{ai\_generated/}, and \texttt{ai\_edited/}. In the default experimental setup, the training and validation roots correspond to the exported splits produced by the dataset construction pipeline. The dataset loader implementation encapsulates this structure and exposes a PyTorch dataset interface. It returns a pair $(x, y)$ for each index, where $x$ is an (optionally augmented) image tensor and $y$ is an integer label in $\{0, 1, 2\}$.
+
+The helper function used by the primary training module constructs training and validation \texttt{DataLoader} instances:
+\begin{itemize}
+  \item It first builds a training dataset using \texttt{DeepfakeDataset(train\_dir, transform=t\_transform)}, where \texttt{t\_transform} is determined by the \texttt{augment} parameter (\texttt{light}, \texttt{standard} or \texttt{strong}).
+  \item If an explicit validation directory is provided and exists, a second \texttt{DeepfakeDataset} is constructed for validation using \texttt{val\_transform}, ensuring that no augmentations are applied to validation images.
+  \item If no validation directory is found, the function falls back to performing a random train/validation split of the training dataset using \texttt{torch.utils.data.random\_split}, with a configurable \texttt{val\_split} fraction and a fixed random seed to maintain reproducibility.
+\end{itemize}
+
+Both training and validation datasets are then wrapped in \texttt{DataLoader} instances with the following settings:
+\begin{itemize}
+  \item \texttt{batch\_size}: e.g.\ 64 by default in \texttt{train\_full.py}, but fully configurable.
+  \item \texttt{shuffle=True} for the training loader and \texttt{shuffle=False} for the validation loader.
+  \item \texttt{num\_workers=2}, balancing parallelism and CPU load.
+  \item \texttt{pin\_memory=true}, \texttt{persistent\_workers=true} and \texttt{prefetch\_factor=2} to reduce data loading latency and avoid worker respawn overhead at every epoch.
+\end{itemize}
+
+\subsection{Model, Loss and Optimizer Initialization}
+
+The main training function in the primary training module receives numerous hyperparameters, either through command-line arguments or via a YAML configuration file. Its initialization steps can be summarized as follows:
+\begin{enumerate}
+  \item \textbf{Configuration loading and seeding.} If a configuration file is provided, its contents override default values such as the data directories, number of epochs, batch size, learning rate, optimizer type, weight decay, validation split, checkpoint and plot directories, random seed, augmentation regime, use of SRM/FFT, loss type, label smoothing, early stopping patience, class weights, dropout probability, learning-rate schedule, backbone type, focal loss gamma and attention head parameters. The random seed is then set for PyTorch, NumPy and Python's \texttt{random} module, and cuDNN is configured with \texttt{deterministic=false}, \texttt{benchmark=true}.
+  \item \textbf{Directory preparation.} Run-specific subdirectories are created under the checkpoint and results roots, using either a user-provided \texttt{run\_name} or a timestamp-based identifier.
+  \item \textbf{Data loader construction.} Training and validation loaders are built as described above.
+  \item \textbf{Backbone and preprocessing layers.} The backbone model is constructed by \texttt{\_build\_backbone}, and if SRM and/or FFT preprocessing is enabled, a \texttt{PreprocessNet} wrapper is instantiated that:
+  \begin{itemize}
+    \item Applies SRM and/or FFT to the input RGB tensor.
+    \item Concatenates the resulting feature maps with the original RGB channels along the channel dimension.
+    \item Adapts the first convolutional layer of the backbone to accept the increased number of channels (e.g.\ from 3 channels to 6 or 7 channels) using either a dedicated SRM adaptor (\texttt{adapt\_conv1\_for\_srm}) or a generic adaptor.
+  \end{itemize}
+  \item \textbf{Attention heads.} If an attention head is requested (either GeM or CBAM), the script modifies the backbone to replace the global pooling operator with GeM or to append a CBAM block to the last convolutional block.
+  \item \textbf{Loss function.} The loss function is constructed by calling \texttt{build\_criterion} in \texttt{losses.py}, which returns either standard cross-entropy, weighted cross-entropy, focal loss or weighted focal loss. Label smoothing and class weights are passed as arguments to this factory function, with default class weights of $[1.5, 1.0, 1.5]$ for Real, AI~Generated and AI~Edited, respectively.
+  \item \textbf{Optimizer and scheduler.} The optimizer (\texttt{Adam} or \texttt{SGD} with momentum) is instantiated over the model's parameters, with learning rate and weight decay chosen according to the configuration. A learning-rate scheduler is then set up, typically \texttt{CosineAnnealingWarmRestarts} or alternatively \texttt{ReduceLROnPlateau}.
+  \item \textbf{Mixed precision and compilation.} If a CUDA device is available, an instance of \texttt{torch.amp.GradScaler} is created, and the training loop uses \texttt{torch.amp.autocast} for forward passes. If \texttt{torch.compile} is available (PyTorch $\geq 2.0$), the model is compiled to reduce Python overhead and to fuse operations where possible.
+\end{enumerate}
+
+\subsection{Training Loop and Early Stopping}
+
+The core of the training process is a loop over epochs, each of which consists of a training phase and a validation phase:
+\begin{enumerate}
+  \item \textbf{Resource monitoring.} At the start of each epoch, the script optionally records system statistics (CPU usage, RAM usage, GPU memory usage, GPU utilization) using psutil and pynvml. These are printed to the console and logged to TensorBoard.
+  \item \textbf{Training phase.} With the model in training mode:
+  \begin{itemize}
+    \item A progress bar (via \texttt{tqdm}) iterates over mini-batches provided by the training DataLoader.
+    \item For each batch, images and labels are moved to the device with \texttt{non\_blocking=true}. A forward pass is performed within a mixed-precision context, the loss is computed, and gradients are backpropagated using the GradScaler, after which the optimizer step is taken and the scaler is updated.
+    \item Running sums of training loss and correct predictions are maintained to compute average loss and accuracy at the end of the phase.
+  \end{itemize}
+  \item \textbf{Validation phase.} With the model in evaluation mode and gradients disabled:
+  \begin{itemize}
+    \item The validation DataLoader is iterated over without shuffling.
+    \item For each batch, logits and loss are computed, and predictions are extracted via \texttt{torch.max}. Ground-truth labels and predictions are appended to lists.
+    \item After all validation batches, overall validation loss and accuracy are computed, along with macro F1-score and per-class F1-scores using scikit-learn.
+  \end{itemize}
+  \item \textbf{Scheduler update and logging.} Depending on the chosen scheduler, either a cosine annealing step is taken (based on epoch count) or the scheduler is updated based on validation loss. All key metrics (training and validation loss, accuracy, macro F1, per-class F1) are logged to TensorBoard and to a CSV file in the results directory.
+  \item \textbf{Checkpointing and early stopping.} At the end of each epoch:
+  \begin{itemize}
+    \item A checkpoint file (containing the full model state) is saved. To conserve disk space, the previous epoch's checkpoint file is removed.
+    \item If the current validation accuracy exceeds the best value observed so far, the ``best model'' checkpoint is updated and the early stopping counter is reset. Otherwise, the counter is incremented. If the number of consecutive non-improving epochs exceeds the early stopping patience (e.g.\ 7 epochs), training is terminated early.
+  \end{itemize}
+\end{enumerate}
+
+At the conclusion of training, the script saves loss and accuracy curves as PNG figures, closes the TensorBoard writer, shuts down NVML (if used), and writes a \texttt{training\_summary.json} file containing the best validation accuracy, number of epochs actually trained, final training and validation accuracies, and the full effective configuration.
+
+\subsection{Default Training Configuration}
+\label{sec:default-training-configuration}
+
+\begin{table}[htbp]
+  \centering
+  \caption{Default Training Configuration}
+  \label{tab:default-training-configuration}
+  \begin{tabular}{ll}
+    \toprule
+    Parameter & Default value \\
+    \midrule
+    Input resolution & $224 \times 224$ \\
+    Batch size & 64 \\
+    Optimizer & Adam \\
+    Learning rate & $1 \times 10^{-4}$ \\
+    Weight decay & $1 \times 10^{-4}$ \\
+    Epochs & 50 \\
+    Loss function & Weighted focal loss (with label smoothing) \\
+    Focal gamma & 3.0 \\
+    Class weights & [1.5, 1.0, 1.5] (Real, AI Generated, AI Edited) \\
+    Augmentation mode & Standard \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Reproducibility Considerations}
+\label{sec:reproducibility}
+
+The experimental results reported in this work are designed to be reproducible. First, hyperparameters and runtime options are stored in YAML configuration files, enabling experiments to be re-executed with identical settings. Second, pseudo-random number generators are seeded consistently for Python, NumPy, and PyTorch, reducing run-to-run variability due to stochastic operations in data loading and optimization. Third, dataset splits are generated deterministically within the dataset construction pipeline, ensuring that the train/validation/test partitions remain stable across repeated builds. Finally, each training run records both metrics and effective configuration values (e.g.\ in CSV/JSON summaries and TensorBoard logs), providing an auditable trace that supports replication and comparative analysis across experiments.
+
+\section{Inference Pipeline}
+\label{sec:inference}
+
+The trained models are used both for offline evaluation on held-out test data and for interactive inference via a web interface. This section describes how the inference pipeline is implemented in each context.
+
+\subsection{Offline Evaluation}
+
+Offline evaluation is conducted using the project's evaluation module. Its workflow is as follows:
+\begin{enumerate}
+  \item \textbf{Model reconstruction.} The function \texttt{load\_model} inspects the state dictionary of the checkpoint to infer architecture details:
+  \begin{itemize}
+    \item Whether SRM or FFT preprocessing layers were used during training.
+    \item Whether the backbone is ResNet18, ResNet50, ConvNeXt-Tiny, ConvNeXt-Small or another supported architecture.
+    \item Whether the classifier head is a simple linear layer or a sequential dropout-plus-linear module.
+    \item The number of output classes (usually three).
+  \end{itemize}
+  It then instantiates an appropriate backbone model with the correct classifier head, optionally wraps it in a \texttt{PreprocessNet} for SRM/FFT preprocessing, adapts the first convolutional layer to the expected number of input channels based on the checkpoint, and applies any requested attention heads (GeM or CBAM). Finally, the state dictionary is loaded into this model, which is moved to the selected device (CPU or GPU) and placed in evaluation mode.
+  \item \textbf{Data loading.} A \texttt{DeepfakeDataset} is instantiated on the designated evaluation directory (typically \texttt{dataset\_builder/test}), using the validation transform. This dataset is wrapped in a \texttt{DataLoader} with a chosen batch size and multiple workers.
+  \item \textbf{Forward pass and metric computation.} The evaluation loop iterates over the \texttt{DataLoader}, passing each batch through the model to obtain logits, extracting predicted labels via \texttt{torch.max}, and accumulating predictions and ground-truth labels. Once all batches are processed, NumPy arrays of true and predicted labels are constructed and:
+  \begin{itemize}
+    \item Saved to disk as \texttt{y\_true.npy} and \texttt{y\_pred.npy}.
+    \item Passed to scikit-learn's \texttt{classification\_report} and \texttt{confusion\_matrix} functions to produce a detailed textual summary and a confusion matrix.
+  \end{itemize}
+\end{enumerate}
+
+In this context, the inference pipeline is a straightforward application of the trained model to a labeled dataset, yielding quantitative metrics suitable for reporting.
+
+\subsection{Interactive Inference and Grad-CAM}
+
+Interactive inference is implemented via a Streamlit-based interface, together with supporting inference and Grad-CAM utilities. The key steps are:
+\begin{enumerate}
+  \item \textbf{User input.} The user uploads an image file (JPG, PNG or WEBP) through the Streamlit interface. The application uses Pillow to:
+  \begin{itemize}
+    \item Verify that the file is a valid image.
+    \item Convert it to RGB for further processing.
+  \end{itemize}
+  If interactive cropping is enabled, the image is passed to the \texttt{streamlit-cropper} widget, and the user selects a rectangular region of interest. The cropped image is then used as the effective input for analysis.
+  \item \textbf{Model loading.} The application uses a cached function \texttt{load\_model\_cached} (decorated with \texttt{@st.cache\_resource}) which calls \texttt{frontend/inference.load\_model}. This function:
+  \begin{itemize}
+    \item Loads the checkpoint from disk, removing any \texttt{\_orig\_mod.} prefixes introduced by \texttt{torch.compile}.
+    \item Infers the architecture and reconstructs the model in a similar manner to the offline evaluation pipeline.
+    \item Moves the model to either CPU or GPU, depending on the user's selection and hardware availability.
+  \end{itemize}
+  The caching mechanism ensures that the model is loaded only once per session, even if the user uploads multiple images.
+  \item \textbf{Image preprocessing and prediction.} The function \texttt{frontend/inference.preprocess\_image} applies a sequence of \texttt{torchvision.transforms} (resize, center-crop, conversion to tensor, and normalization with ImageNet statistics) to convert the PIL image into a batched tensor of shape $[1, 3, 224, 224]$. This tensor is passed through the model in evaluation mode. The function \texttt{softmax\_probs} then computes softmax probabilities over the three classes. The function \texttt{predict} returns both the predicted label and a mapping from each class name (Real, AI~Generated, AI~Edited) to its probability.
+  \item \textbf{Display of results.} The Streamlit application displays:
+  \begin{itemize}
+    \item A large ``badge'' showing the predicted class and its associated confidence.
+    \item Per-class probability values with progress bars for visual comparison.
+  \end{itemize}
+  \item \textbf{Grad-CAM computation.} If the user chooses to view Grad-CAM, the application:
+  \begin{itemize}
+    \item Constructs an instance of \texttt{frontend.gradcam.GradCAM}, passing the model.
+    \item Selects a target class, either the predicted class or a class manually chosen by the user.
+    \item Calls the Grad-CAM object on the preprocessed tensor with the target class index, obtaining a heatmap in the form of a 2D array with values in $[0, 1]$.
+    \item Uses utility functions such as \texttt{overlay\_heatmap} and \texttt{create\_gradcam\_comparison} to produce overlay images (original image overlaid with heatmap) and side-by-side comparisons (original, raw heatmap, overlay).
+  \end{itemize}
+  These results are then displayed in separate tabs, and download buttons allow the user to save the overlay and comparison images.
+  \item \textbf{All-class comparison.} The application optionally generates Grad-CAM overlays for all three classes in parallel, displaying them side-by-side. This allows a nuanced inspection of how the model's attention differs between the Real, AI~Generated and AI~Edited classes for a single input.
+\end{enumerate}
+
+Through this pipeline, the trained model is exposed in a way that is both accessible to non-expert users and informative for researchers seeking to understand and trust the model's decisions.
+
+\section*{Proposed Diagrams}
+\addcontentsline{toc}{section}{Proposed Diagrams}
+
+Although this chapter does not include images directly, the following diagrams are recommended for inclusion as figures in the thesis. They should be constructed based on the descriptions below and referenced in the text where appropriate.
+
+\subsection*{Diagram 1: Codebase Architecture}
+
+\textbf{Title:} Overall Software Architecture of the Deepfake Detection System.
+
+\textbf{Components:}
+\begin{itemize}
+  \item A block representing \texttt{dataset\_builder/}, subdivided into \texttt{config/}, \texttt{modules/}, \texttt{scripts/}, \texttt{output/}, and the exported splits \texttt{train/}, \texttt{val/}, \texttt{test/}.
+  \item A block representing \texttt{scripts/}, subdivided into \texttt{data/}, \texttt{preprocessing/}, \texttt{dataloader/}, \texttt{training/}, \texttt{evaluation/}, and \texttt{explainability/}.
+  \item A block representing \texttt{frontend/}, containing \texttt{config.py}, \texttt{inference.py}, \texttt{gradcam.py} and \texttt{app.py}.
+  \item Ancillary blocks for \texttt{models/}, \texttt{results/} and \texttt{logs/}.
+\end{itemize}
+
+\textbf{Arrows and data flow:}
+\begin{itemize}
+  \item Arrows from raw data sources into \texttt{dataset\_builder/}, and from there into the exported dataset directories.
+  \item Arrows from \texttt{dataset\_builder/train} and \texttt{dataset\_builder/val} into \texttt{scripts/dataloader} and \texttt{scripts/preprocessing}, and onward into \texttt{scripts/training}.
+  \item Arrows from \texttt{scripts/training} into \texttt{models/} and \texttt{results/}.
+  \item Arrows from \texttt{models/} and \texttt{dataset\_builder/test} into \texttt{scripts/evaluation}.
+  \item Arrows from \texttt{models/} into \texttt{frontend/inference.py} and \texttt{frontend/app.py}.
+\end{itemize}
+
+\textbf{Explanation:} This diagram should illustrate the static organization of the repository and the relationships between the subsystems responsible for dataset construction, training, evaluation and interactive inference.
+
+\subsection*{Diagram 2: Training Workflow}
+
+\textbf{Title:} Training Workflow for Multi-Class Deepfake Detection.
+
+\textbf{Components:}
+\begin{itemize}
+  \item Input nodes for \texttt{dataset\_builder/train} and \texttt{dataset\_builder/val}.
+  \item Processing nodes representing:
+  \begin{itemize}
+    \item \texttt{DeepfakeDataset} (image loading and label mapping).
+    \item Albumentations transforms (light/standard/strong).
+    \item Optional SRM and FFT preprocessing layers.
+    \item Backbone network (ResNet, ConvNeXt, EfficientNet, ViT).
+    \item Optional attention heads (GeM, CBAM).
+    \item Loss function (weighted focal loss with label smoothing).
+    \item Optimizer (Adam or SGD with momentum).
+    \item Learning-rate scheduler (cosine annealing or ReduceLROnPlateau).
+    \item Early stopping and checkpointing logic.
+  \end{itemize}
+  \item Output nodes for model checkpoints (\texttt{models/\textless run\_id\textgreater/}) and training artifacts (\texttt{results/\textless run\_id\textgreater/}).
+\end{itemize}
+
+\textbf{Arrows and data flow:} Arrows should connect the components in the order in which data flows during training, including feedback from validation metrics to scheduler and early stopping decisions.
+
+\textbf{Explanation:} The diagram should depict the dynamic sequence of operations in the training loop, from reading images and applying augmentations, through forward and backward passes, to update of model parameters and saving of checkpoints.
+
+\subsection*{Diagram 3: Model Execution Flow}
+
+\textbf{Title:} Forward Pass Structure of the Deepfake Detection Model.
+
+\textbf{Components:}
+\begin{itemize}
+  \item Input: a preprocessed tensor of shape $[B, C, H, W]$.
+  \item Optional preprocessing block for SRM and FFT:
+  \begin{itemize}
+    \item SRM layer producing residual channels.
+    \item FFT layer producing frequency magnitude channels.
+    \item Concatenation of RGB, SRM and FFT channels.
+  \end{itemize}
+  \item Backbone block representing convolutional or transformer layers.
+  \item Optional attention block representing GeM or CBAM.
+  \item Global pooling and fully-connected classification head.
+  \item Output: logits $[B, 3]$ and softmax probabilities.
+\end{itemize}
+
+\textbf{Arrows and data flow:} The diagram should show how the optional preprocessing and attention modules wrap around the backbone and how the final logits are produced and converted to probabilities.
+
+\subsection*{Diagram 4: Data Loading and Preprocessing Pipeline}
+
+\textbf{Title:} Data Loading and Preprocessing Pipeline.
+
+\textbf{Components:}
+\begin{itemize}
+  \item A representation of the directory structure: \texttt{dataset\_builder/train/real}, \texttt{ai\_generated}, \texttt{ai\_edited}.
+  \item The \texttt{DeepfakeDataset} block, showing directory traversal, BGR-to-RGB conversion and label mapping.
+  \item The Albumentations transform block, showing resize, normalization and augmentations (flip, rotate, brightness/contrast, compression, noise, blur).
+  \item The \texttt{DataLoader} block assembling mini-batches and using multiple worker processes.
+\end{itemize}
+
+\textbf{Arrows and data flow:} Arrows should progress from disk files through dataset, transforms and dataloader into the training loop.
+
+\textbf{Explanation:} This diagram should clarify the path from raw images on disk to the tensors that are actually presented to the model during training and validation.
+
+\subsection*{Diagram 5: Inference and Explainability Pipeline}
+
+\textbf{Title:} Inference and Grad-CAM Explainability Pipeline.
+
+\textbf{Components:}
+\begin{itemize}
+  \item User actions: image upload and optional cropping.
+  \item Preprocessing: PIL image validation, conversion to RGB and \texttt{preprocess\_image} (resize, center-crop, normalization).
+  \item Model loading: reconstruction of architecture from checkpoint and device selection.
+  \item Forward pass: computation of logits and softmax probabilities.
+  \item Prediction display: class label and per-class confidence bars.
+  \item Grad-CAM block: gradient computation, heatmap generation, overlay creation and comparison panels.
+\end{itemize}
+
+\textbf{Arrows and data flow:} The diagram should show a main path from uploaded image to prediction, and a secondary branch from the model and preprocessed image into the Grad-CAM computation, with the resulting overlays fed back into the user interface.
+
+\textbf{Explanation:} This diagram should convey how the deployed system simultaneously provides predictions and visual explanations, thereby supporting interpretability and user trust.
+

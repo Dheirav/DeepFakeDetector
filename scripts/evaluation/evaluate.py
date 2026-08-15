@@ -10,13 +10,26 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import classification_report, confusion_matrix
 from tqdm import tqdm
 
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dataloader.dataset import DeepfakeDataset
 from preprocessing.preprocessing import val_transform
 from preprocessing.srm import SRMLayer, adapt_conv1_for_srm
 from preprocessing.fft import FFTLayer
 from modules.attention_heads import GeM, CBAMBlock
+from modules.cascade_classifier import CascadeClassifier
+
+import sys
+# Ensure the `scripts/` directory is first on sys.path so imports like
+# `modules.*` resolve to `scripts/modules/*`. Add the repo root after it
+# so top-level packages do not shadow the `scripts` module namespace.
+scripts_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
+if repo_root not in sys.path:
+    # place repo_root after scripts_dir to avoid shadowing
+    sys.path.insert(1, repo_root)
+
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
 
@@ -410,6 +423,18 @@ def load_model(
         for k in raw_sd
     )
 
+    # Detect number of classes from checkpoint if available (fallback to 3)
+    target_num_classes = None
+    for k, v in raw_sd.items():
+        if k.endswith("fc.weight") or k.endswith("fc.1.weight") or k.endswith("classifier.2.weight") or k.endswith("classifier.2.1.weight"):
+            try:
+                target_num_classes = int(v.shape[0])
+                break
+            except Exception:
+                pass
+    if target_num_classes is None:
+        target_num_classes = 3
+
     # Determine architecture name
     if is_convnext:
         arch = "convnext_small" if is_convnext_small else "convnext_tiny"
@@ -433,6 +458,7 @@ def load_model(
             gem_learnable=gem_learnable,
             cbam_reduction=cbam_reduction,
             cbam_kernel=cbam_kernel,
+                num_classes=target_num_classes,
         )
 
     elif arch == "convnext_tiny":
@@ -440,8 +466,8 @@ def load_model(
         model = models.convnext_tiny(weights=None)
         in_feat = model.classifier[2].in_features
         model.classifier[2] = (
-            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
-            if sequential_fc else nn.Linear(in_feat, 3)
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, target_num_classes))
+            if sequential_fc else nn.Linear(in_feat, target_num_classes)
         )
         model = _apply_attention(
             model,
@@ -458,8 +484,8 @@ def load_model(
         model = models.convnext_small(weights=None)
         in_feat = model.classifier[2].in_features
         model.classifier[2] = (
-            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
-            if sequential_fc else nn.Linear(in_feat, 3)
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, target_num_classes))
+            if sequential_fc else nn.Linear(in_feat, target_num_classes)
         )
         model = _apply_attention(
             model,
@@ -476,8 +502,8 @@ def load_model(
         model = models.resnet50(weights=None)
         in_feat = 2048
         model.fc = (
-            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
-            if sequential_fc else nn.Linear(in_feat, 3)
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, target_num_classes))
+            if sequential_fc else nn.Linear(in_feat, target_num_classes)
         )
         model = _apply_attention(
             model,
@@ -494,8 +520,8 @@ def load_model(
         model = models.resnet18(weights=None)
         in_feat = 512
         model.fc = (
-            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, 3))
-            if sequential_fc else nn.Linear(in_feat, 3)
+            nn.Sequential(nn.Dropout(p=0.0), nn.Linear(in_feat, target_num_classes))
+            if sequential_fc else nn.Linear(in_feat, target_num_classes)
         )
         model = _apply_attention(
             model,
@@ -655,6 +681,66 @@ def run_evaluation(
     print(f"\nSaved y_true.npy and y_pred.npy to {save_dir}")
     print(f"Overall accuracy: {(y_true == y_pred).mean()*100:.2f}%")
 
+
+def run_cascade_evaluation(
+    stage1_model_path,
+    stage2_model_path,
+    data_dir,
+    batch_size=64,
+    save_dir="../results",
+    attention_head: str = "none",
+    gem_p: float = 3.0,
+    gem_learnable: bool = False,
+    cbam_reduction: int = 16,
+    cbam_kernel: int = 7,
+    cascade_threshold: float = None,
+):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    print(f"Loading Stage-1 model from: {stage1_model_path}")
+    stage1 = load_model(
+        stage1_model_path,
+        device,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
+    )
+
+    print(f"Loading Stage-2 model from: {stage2_model_path}")
+    stage2 = load_model(
+        stage2_model_path,
+        device,
+        attention_head=attention_head,
+        gem_p=gem_p,
+        gem_learnable=gem_learnable,
+        cbam_reduction=cbam_reduction,
+        cbam_kernel=cbam_kernel,
+    )
+
+    dataset = DeepfakeDataset(data_dir, transform=val_transform)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    print(f"Test samples: {len(dataset)} | Batches: {len(loader)}")
+
+    cascade = CascadeClassifier(stage1, stage2, device=device, cascade_threshold=cascade_threshold)
+    out = cascade.run_on_dataloader(loader)
+
+    # ensure save dir exists
+    os.makedirs(save_dir, exist_ok=True)
+    np.save(os.path.join(save_dir, "y_true.npy"), out['y_true'])
+    np.save(os.path.join(save_dir, "y_pred.npy"), out['y_pred'])
+    np.save(os.path.join(save_dir, "stage1_preds.npy"), out['stage1_preds'])
+    np.save(os.path.join(save_dir, "stage2_preds.npy"), out['stage2_preds'])
+
+    # write stats
+    stats_path = os.path.join(save_dir, "cascade_stats.json")
+    with open(stats_path, 'w') as f:
+        json.dump(out['stats'], f, indent=2)
+
+    print(f"Saved cascade outputs to: {save_dir}")
+    print(f"Cascade stats: {out['stats']}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate deepfake detection model on test set")
     parser.add_argument('--model_path',  type=str, required=True,
@@ -684,6 +770,9 @@ if __name__ == "__main__":
                         help='CBAM channel reduction ratio (overrides summary if set)')
     parser.add_argument('--cbam_kernel', type=int, default=None,
                         help='CBAM spatial attention kernel size, 3 or 7 (overrides summary if set)')
+    parser.add_argument('--cascade', action='store_true', help='Enable two-stage cascade evaluation')
+    parser.add_argument('--stage2_model_path', type=str, default=None, help='Path to Stage-2 refiner model (.pth)')
+    parser.add_argument('--cascade_threshold', type=float, default=None, help='Optional threshold to gate Stage-2 when |P(real)-P(ai_edited)| <= threshold')
 
     args = parser.parse_args()
 
@@ -715,14 +804,31 @@ if __name__ == "__main__":
     cbam_reduction = _cfg_or(16, args.cbam_reduction, "cbam_reduction")
     cbam_kernel = _cfg_or(7, args.cbam_kernel, "cbam_kernel")
 
-    run_evaluation(
-        model_path=args.model_path,
-        data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        save_dir=save_dir,
-        attention_head=attention_head,
-        gem_p=gem_p,
-        gem_learnable=gem_learnable,
-        cbam_reduction=cbam_reduction,
-        cbam_kernel=cbam_kernel,
-    )
+    if args.cascade:
+        if not args.stage2_model_path:
+            raise RuntimeError("--cascade requires --stage2_model_path to be set")
+        run_cascade_evaluation(
+            stage1_model_path=args.model_path,
+            stage2_model_path=args.stage2_model_path,
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            save_dir=save_dir,
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
+            cascade_threshold=args.cascade_threshold,
+        )
+    else:
+        run_evaluation(
+            model_path=args.model_path,
+            data_dir=args.data_dir,
+            batch_size=args.batch_size,
+            save_dir=save_dir,
+            attention_head=attention_head,
+            gem_p=gem_p,
+            gem_learnable=gem_learnable,
+            cbam_reduction=cbam_reduction,
+            cbam_kernel=cbam_kernel,
+        )

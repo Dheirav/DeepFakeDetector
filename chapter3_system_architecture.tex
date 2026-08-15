@@ -1,0 +1,218 @@
+% Chapter 3: System Architecture (auto-generated from codebase)
+\chapter{System Architecture}
+
+\section{System Architecture Overview}
+This chapter documents the concrete system architecture implemented in the
+repository. All descriptions are extracted from the code; no design claims are
+made beyond what is present in the implementation. The system is organised as
+modular pipelines: a dataset builder, a preprocessing pipeline, optional
+forensic feature extractors (SRM, FFT), a configurable backbone + attention
+stack, and training/evaluation utilities.
+
+The implemented system performs three-class classification (Real, AI
+Generated, AI Edited) using ImageNet-pretrained backbones adapted to accept
+optional additional input channels produced by SRM and FFT modules. Training
+is orchestrated by `scripts/training/train_full.py` which wires the dataset
+loaders, preprocessing, loss, optimizer and learning-rate scheduler.
+
+\section{Major System Components}
+\begin{itemize}
+  \item \textbf{Dataset Builder:} indexer, deduplicator, validator, sampler,
+    and cluster-aware splitter implemented under \texttt{dataset_builder/modules/}.
+    Key files: \texttt{dataset_builder/modules/indexer.py},
+    \texttt{dataset_builder/modules/deduplicator.py},
+    \texttt{dataset_builder/modules/validator.py},
+    \texttt{dataset_builder/modules/sampler.py}, and
+    \texttt{dataset_builder/modules/splitter.py}.
+
+  \item \textbf{Data Loading:} a dataset class using OpenCV for image I/O is
+    implemented in \texttt{scripts/dataloader/dataset.py}. A legacy
+    torchvision-style loader exists at \texttt{scripts/dataloader/dataset_loader.py}.
+
+  \item \textbf{Preprocessing:} Albumentations-based training transforms and
+    inference transforms are implemented in
+    \texttt{scripts/preprocessing/preprocessing.py}. SRM and FFT feature
+    extractors live in \texttt{scripts/preprocessing/srm.py} and
+    \texttt{scripts/preprocessing/fft.py} respectively.
+
+  \item \textbf{Model Construction and Training:} backbone and head assembly,
+    optional attention/pooling insertion, training loop, AMP and optional
+    \texttt{torch.compile} are implemented in
+    \texttt{scripts/training/train_full.py}.
+
+  \item \textbf{Attention and Pooling Heads:} GeM pooling and CBAM attention
+    are implemented in \texttt{scripts/modules/attention_heads.py}.
+
+  \item \textbf{Losses and Evaluation:} custom focal/weighted losses are in
+    \texttt{scripts/training/losses.py}; evaluation and confusion plotting
+    utilities are under \texttt{scripts/evaluation/}.
+
+  \item \textbf{Frontend / Inference / Explainability:} model loading,
+    deterministic torchvision preprocessing, and Grad-CAM utilities are in
+    \texttt{frontend/} (for example \texttt{frontend/inference.py} and
+    \texttt{frontend/gradcam.py}).
+\end{itemize}
+
+\section{Deep Feature Extraction Architecture}
+This section describes the implemented feature extraction and how additional
+forensic signals are fused with RGB input.
+
+\subsection{SRM (Steganalysis Rich Model)}
+- Implementation: \texttt{scripts/preprocessing/srm.py}. The module registers
+  three fixed high-pass kernels (a 5\times5 Laplacian, horizontal and
+  vertical kernels) as non-trainable buffers and applies them depthwise to
+  the grayscale image to compute three residual maps.
+- Output: the layer returns the original RGB concatenated with the three
+  residuals (RGB + 3 residuals → 6 channels) when used directly; the
+  training wrapper extracts only residuals and appends them to RGB to avoid
+  duplication when necessary.
+- Integration: a helper \texttt{adapt_conv1_for_srm} replaces or reinitialises
+  the backbone stem convolution to accept increased input channels (initialise
+  extra-channel weights as 0.1× pretrained RGB weights). The helper lives in
+  \texttt{scripts/preprocessing/srm.py} and is used by
+  \texttt{scripts/training/train_full.py} and \texttt{frontend/inference.py}.
+
+\subsection{FFT feature}
+- Implementation: \texttt{scripts/preprocessing/fft.py}. The module computes the
+  centred 2D Fourier transform of the grayscale image, applies a log of the
+  magnitude and min/max normalisation to produce a single B×1×H×W channel.
+- Integration: when enabled the FFT channel is concatenated after RGB and
+  residual channels; the stem conv is adapted to accept the resulting number
+  of input channels.
+
+\subsection{Fusion into Network Input}
+- The training script constructs an internal wrapper `PreprocessNet` in
+  \texttt{train_full.py}. This wrapper optionally computes residuals and FFT,
+  concatenates features in the order: RGB → residuals → FFT, and forwards the
+  concatenated tensor to the adapted backbone.
+
+\section{Data Flow Pipeline}
+The implemented runtime data flow (training / inference) can be described as
+the following sequence.
+
+\subsection{Dataset pipeline (builder and loader)}
+\begin{enumerate}
+  \item \textbf{Indexing and metadata}: source collections are indexed by the
+    dataset builder. See \texttt{dataset_builder/modules/indexer.py}.
+  \item \textbf{Validation}: image-level checks (resolution, blur, metadata)
+    are implemented in \texttt{dataset_builder/modules/validator.py}.
+  \item \textbf{Deduplication}: exact (MD5) and near-duplicate (pHash)
+    removal, tie-breaking by quality/resolution, and cross-class conflict
+    reporting are implemented in \texttt{dataset_builder/modules/deduplicator.py}.
+  \item \textbf{Sampling and quota enforcement}: per-class and per-source
+    quota sampling, quality filtering, and source-capping are implemented in
+    \texttt{dataset_builder/modules/sampler.py}.
+  \item \textbf{Cluster-aware splitting}: phash-based clustering and a
+    deterministic greedy assignment to splits that preserves cluster integrity
+    are implemented in \texttt{dataset_builder/modules/splitter.py}.
+\end{enumerate}
+
+\subsection{Preprocessing and augmentation}
+\begin{itemize}
+  \item \textbf{Training transforms:} three named augmentations implemented in
+    \texttt{scripts/preprocessing/preprocessing.py}: `light`, `standard`, and
+    `strong`. They apply Resize(224,224), flips, rotations, brightness/contrast,
+    image compression (JPEG) simulation and, for `strong`, noise/blur. Albumentations
+    and \texttt{ToTensorV2} are used for conversion to PyTorch tensors.
+
+  \item \textbf{Inference transforms:} deterministic torchvision transforms are
+    used by the frontend for single-image inference (Resize, CenterCrop,
+    ToTensor, Normalize) in \texttt{frontend/inference.py}.
+
+  \item \textbf{Image I/O and channel ordering:} images are read with OpenCV
+    (BGR) in \texttt{scripts/dataloader/dataset.py} and immediately converted
+    to RGB prior to augmentation.
+\end{itemize}
+
+\subsection{Model forward pass}
+\begin{enumerate}
+  \item Input images are transformed to tensors of size 3×224×224.
+  \item If enabled, the SRM and FFT modules compute additional channels and
+    these are concatenated with RGB (RGB → residuals → FFT).
+  \item The backbone processes the concatenated tensor; optional CBAM or GeM
+    modules reweight spatial/channel information or replace global pooling.
+  \item The pooled feature vector passes through dropout (default 0.4) and a
+    final linear classification head that produces 3 logits.
+\end{enumerate}
+
+\section{Model Architecture and Components}
+\subsection{Supported backbones}
+- ResNet-18 and ResNet-50 (via torchvision). See usage in
+  \texttt{scripts/training/train_full.py} where ResNet weights are loaded and
+  classification heads replaced.
+- ConvNeXt (tiny and small) via torchvision; stem adaptation logic is
+  included for ConvNeXt networks in \texttt{train_full.py}.
+- EfficientNet-B3 and ViT-B/16 are supported (ViT gets a token-based head
+  replacement and is treated specially in the script).
+
+\subsection{Attention and pooling}
+- CBAM (channel + spatial attention) implemented as \texttt{CBAMBlock} in
+  \texttt{scripts/modules/attention_heads.py} and can be appended to late
+  stages (for ResNet appended after \texttt{layer4}; for ConvNeXt appended to
+  \texttt{features}).
+- GeM pooling (parameter `p`, default 3.0) implemented as \texttt{GeM} in the
+  same file; GeM may replace the backbone global average pooling.
+
+\subsection{Prediction head}
+- The final head is a linear mapping to three logits (num classes = 3). For
+  backbones the head is built by `make_head(in_features)` inside
+  \texttt{scripts/training/train_full.py}. Softmax conversion is performed at
+  inference time in \texttt{frontend/inference.py} via a small helper `softmax_probs`.
+
+\section{Training Pipeline}
+\subsection{DataLoaders}
+- `get_data_loaders` in \texttt{scripts/training/train_full.py} constructs
+  PyTorch DataLoaders from \texttt{DeepfakeDataset} with `persistent_workers=True`,
+  `prefetch_factor=2`, and default `num_workers=2`.
+
+\subsection{Loss functions}
+- Custom `FocalLoss` and a `build_criterion` factory are implemented in
+  \texttt{scripts/training/losses.py}. Default class weights are
+  `[1.5, 1.0, 1.5]` and focal gamma is configurable (code default 3.0).
+
+\subsection{Optimiser and scheduler}
+- Optimisers: Adam (default) or SGD (option) selected in
+  \texttt{scripts/training/train_full.py}.
+- Learning-rate schedulers: `CosineAnnealingWarmRestarts( T_0=20, T_mult=2 )`
+  when `lr_schedule=='cosine'` or `ReduceLROnPlateau` when `lr_schedule=='plateau'`.
+
+\subsection{Precision, compilation, and logging}
+- AMP is used with `torch.amp.autocast` and `torch.amp.GradScaler` in the
+  training loop; the training script also attempts to call `torch.compile`
+  when available. TensorBoard logging, per-epoch `metrics.csv` and a
+  `training_summary.json` are produced in the run `results` directory.
+
+\section{Explainability and Visualization}
+- Grad-CAM utilities and explainability helpers are present in
+  \texttt{frontend/gradcam.py} and \texttt{demo_gradcam.py}. The frontend
+  inference pipeline loads checkpoints, adapts stems for SRM if needed, and
+  runs the model in evaluation mode to produce logits, probabilities, and
+  Grad-CAM visualisations. See \texttt{frontend/inference.py} and
+  \texttt{frontend/gradcam.py} for concrete usage.
+
+\section{Mapping of Architecture Components to Code Modules}
+The following mapping summarises where each architectural responsibility is
+implemented in the repository.
+\begin{itemize}
+  \item Dataset builder: \texttt{dataset_builder/modules/} (\texttt{indexer.py}, \texttt{deduplicator.py}, \texttt{validator.py}, \texttt{sampler.py}, \texttt{splitter.py})
+  \item Data loading: \texttt{scripts/dataloader/dataset.py} (OpenCV BGR→RGB)
+  \item Augmentations: \texttt{scripts/preprocessing/preprocessing.py} (Albumentations, ToTensorV2)
+  \item SRM: \texttt{scripts/preprocessing/srm.py}
+  \item FFT: \texttt{scripts/preprocessing/fft.py}
+  \item Model assembly & training loop: \texttt{scripts/training/train_full.py}
+  \item Losses: \texttt{scripts/training/losses.py}
+  \item Attention / GeM: \texttt{scripts/modules/attention_heads.py}
+  \item Evaluation / plotting: \texttt{scripts/evaluation/}
+  \item Frontend & explainability: \texttt{frontend/inference.py}, \texttt{frontend/gradcam.py}
+\end{itemize}
+
+\section{Concluding Remarks}
+This chapter presented the system architecture as implemented in the
+repository. The description is intentionally conservative and tied directly to
+the code: SRM and FFT are implemented as explicit preprocessing modules, the
+dataset builder provides deterministic deduplication and cluster-aware
+splitting, and the training script composes these pieces into a configurable
+training pipeline supporting multiple modern backbones and optional attention
+and pooling heads.
+
+% End of chapter

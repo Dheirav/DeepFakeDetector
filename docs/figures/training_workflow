@@ -1,0 +1,38 @@
+digraph training_workflow {
+	graph [dpi=300 nodesep=0.7 rankdir=LR ranksep=0.8]
+	node [fontsize=10 shape=box style=rounded]
+	edge [arrowsize=0.7]
+	dataset [label="Dataset
+(train / val)"]
+	loader [label="DeepfakeDataset
+loader"]
+	albumentations [label="Albumentations
+augmentations"]
+	srm_fft [label="SRM / FFT
+preprocessing"]
+	backbone [label="Backbone
+network"]
+	attention [label="Attention
+module (GeM / CBAM)"]
+	loss [label="Loss
+computation"]
+	optimizer [label="Optimizer
+(update weights)"]
+	scheduler [label="Learning rate
+scheduler"]
+	checkpoint [label="Checkpoint
+saving"]
+	dataset -> loader [label=samples fontsize=8]
+	loader -> albumentations [label="image tensors" fontsize=8]
+	albumentations -> srm_fft [label="preprocessed
+images" fontsize=8]
+	srm_fft -> backbone [label="input batch" fontsize=8]
+	backbone -> attention [label="feature maps" fontsize=8]
+	attention -> loss [label=logits fontsize=8]
+	loss -> optimizer [label=gradients fontsize=8]
+	optimizer -> backbone [label="weight update" dir=back fontsize=8]
+	optimizer -> scheduler [label=step fontsize=8]
+	scheduler -> optimizer [label="adjust LR" fontsize=8 style=dashed]
+	loss -> checkpoint [label="best val
+metrics" fontsize=8 style=dashed]
+}

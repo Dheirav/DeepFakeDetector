@@ -1,0 +1,978 @@
+% Main Overleaf-ready LaTeX file containing Chapter 4: Methodology
+\documentclass[11pt]{report}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{longtable}
+\usepackage{setspace}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{url}
+\usepackage{xurl}
+\usepackage{geometry}
+\geometry{margin=1in}
+\graphicspath{{docs/figures/}}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\onehalfspacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+\titlespacing*{\section}{0pt}{2em}{1em}
+\titlespacing*{\subsection}{0pt}{1.5em}{0.8em}
+\titlespacing*{\subsubsection}{0pt}{1.2em}{0.6em}
+
+\setlist[itemize]{itemsep=6pt, topsep=4pt}
+\setlist[enumerate]{itemsep=6pt, topsep=4pt}
+
+\onehalfspacing
+\setlength{\parskip}{0.6em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+\onehalfspacing
+
+\title{Methodology: Deepfake Detection System}
+\author{Auto-generated from repository}
+\date{\today}
+\maketitle
+\tableofcontents
+\clearpage
+
+\chapter{Methodology}
+
+\section{Methodology Overview}
+This chapter details the methodology employed to construct, train and evaluate
+the deepfake detection system implemented in this repository. The system
+integrates multiple complementary signal domains: spatial RGB appearance,
+handcrafted high-frequency residuals (\textbf{Steganalysis Rich Model (SRM)}), and frequency-domain magnitude
+features (\textbf{Fast Fourier Transform (FFT)}). These modalities are fused
+with modern deep feature extractors and lightweight attention/pooling modules.
+The pipeline comprises: dataset construction; preprocessing and augmentation;
+feature extraction using pretrained backbones; optional preprocessing modules
+(\texttt{SRMLayer} and \texttt{FFTLayer}); attention and pooling; optimisation and
+training; and evaluation. Implementation details are referenced directly to
+repository modules.
+
+The overarching design objective is to produce a classifier that reliably
+discriminates among three semantic classes: Real, AI Generated, and AI Edited.
+To this end, the methodology emphasises careful dataset curation to avoid
+leakage and ensure representativeness, multi-domain preprocessing that
+amplifies forensic cues, transfer learning from ImageNet-pretrained backbones
+to leverage robust low-level features, and attention and pooling mechanisms
+that concentrate model capacity on informative spatial and channel components.
+The following sections expand each part of the pipeline while preserving all
+factual implementation details present in the codebase.
+
+\section{Dataset Description}
+\subsection{Motivation for a Curated Dataset}
+Supervised forensic models are sensitive to dataset composition. Publicly
+available collections may be biased towards a narrow set of generative models
+or capture conditions; therefore the project implements a purpose-built,
+multi-source dataset assembled by the pipeline.
+This curation enables deterministic pre-processing, enforced class-balancing,
+and provenance metadata that supports reproducible experiments and rigorous
+error analysis.
+
+\subsection{Three-class Taxonomy}
+The dataset uses an explicit three-class taxonomy:
+\begin{itemize}
+  \item \textbf{Real (Class 0)} — original, unmanipulated images.
+  \item \textbf{AI Generated (Class 1)} — fully synthetic images produced by
+  generative models (GANs, diffusion models, etc.).
+  \item \textbf{AI Edited (Class 2)} — real images that have been edited (for
+  example via inpainting, face-swap, or localized retouching).
+\end{itemize}
+
+The separation of generated and edited classes enables the classifier to learn
+distinct signatures: global spectral fingerprints often indicate fully
+generated imagery, while localized residual anomalies better characterise
+editing operations.
+
+\subsection{Dataset Size, Splits and Export}
+Recorded counts are: real = 26,000; ai_generated = 26,000; ai_edited = 25,865; total = 77,865. The pipeline writes exported splits to export directories. While nominal YAML-configured ratios exist (70/15/15), the implemented cluster-aware splitter produces an empirical export approximating 40/30/30 in some runs; the split implementation is in the splitter module and is orchestrated by the dataset pipeline.
+
+\subsection{Class Balancing and Quota Sampling}
+The production pipeline enforces per-source quotas and overall class balance to
+prevent dominance of any single class or source. The sampling logic is implemented in the sampler module and deterministic
+behaviour is ensured via \texttt{set_global_seed} in the dataset pipeline.
+Balanced datasets reduce training bias and ensure that per-class metrics are
+meaningful for operational evaluation.
+
+\subsection{Source Diversity and Manipulation Types}
+The dataset aggregates diverse capture conditions and manipulation methods to
+improve generalisation. Diversity includes multiple camera models, compression
+artifacts, and generative model variants; manipulation types include full
+generation, inpainting, and face-swapping. The pipeline preserves provenance
+metadata (for example an export index file) to support stratified analyses
+by source or manipulation family.
+
+\subsection{Deduplication, Validation and Dataset Quality}
+Deduplication is performed with perceptual hashing and validation stages check
+resolution, blur and metadata (see the deduplicator and validator modules).
+Cluster-aware splitting ensures that related items (e.g. frames extracted from the same video) remain
+in the same split to prevent leakage. These steps are critical because low-
+quality or duplicated training examples encourage memorisation of source
+artifacts rather than learning transferable forensic cues.
+
+\section{Data Preprocessing}
+\subsection{Overview}
+Preprocessing responsibilities are split across dataset-level filtering and
+model-input preparation. Model-input preprocessing is implemented primarily in
+the preprocessing module and uses Albumentations for training-time
+augmentations and Torchvision transforms for deterministic inference-time
+processing. Optional preprocessing modules (\texttt{SRMLayer}, \texttt{FFTLayer})
+are implemented in dedicated SRM and FFT modules and are applied via the
+\texttt{PreprocessNet} wrapper in the training module.
+
+\subsection{Image Loading and Channel Ordering}
+At data ingest, images are read with OpenCV (BGR format) within the dataloader
+module. The loader performs an explicit BGR→RGB conversion prior to
+augmentation to align with pretrained backbones' expected channel ordering and
+avoid inadvertent color-space anomalies.
+
+\subsection{Resizing and Normalization}
+All inputs are resized to 224×224 during augmentation. Pixel normalisation uses
+ImageNet mean and standard deviation (mean=[0.485,0.456,0.406],
+std=[0.229,0.224,0.225]) to maintain consistency with pretrained feature
+initialisations. Conversion to PyTorch channel ordering (C,H,W) and floating
+tensor is performed by \texttt{ToTensorV2} as the final augmentation step.
+
+\subsection{Augmentation Modes and Techniques}
+Training augmentations are exposed as three named transforms via
+\texttt{get_train_transform(mode)}:
+\begin{itemize}
+  \item \texttt{light}: Resize(224,224), HorizontalFlip(p=0.5), Normalize(),
+  \texttt{ToTensorV2}.
+  \item \texttt{standard} (default): Resize(224,224), HorizontalFlip(p=0.5),
+  Rotate(limit=15,p=0.5), RandomBrightnessContrast(p=0.5),
+  ImageCompression(quality_range=(30,100),p=0.4), Normalize(), \texttt{ToTensorV2}.
+  \item \texttt{strong}: as \texttt{standard} with intensified ImageCompression
+  (20–95), additive noise (GaussNoise or ISONoise) and light blur (Gaussian or
+  Median) to simulate harsh capture conditions.
+\end{itemize}
+
+Rationale: Compression simulation addresses lossy storage/transmission; noise
+injection models sensor or post-processing noise; geometric transforms improve
+robustness to framing variations; blur reduces sensitivity to fine-grained
+texture so models learn coarser but more generalisable cues.
+
+\subsection{Training vs Inference Preprocessing}
+Training uses stochastic Albumentations to promote invariance, while
+inference applies deterministic Torchvision transforms (Resize, CenterCrop,
+ToTensor, Normalize) to ensure repeatable inputs and stable evaluation.
+
+\section{Feature Extraction}
+\subsection{Candidate Backbones and Feature Dimensions}
+The codebase supports multiple backbone families (constructed in the training module): ResNet-18/ResNet-50 (final features
+512/2048), ConvNeXt-Tiny/Small (final features 768), EfficientNet-B3 and
+ViT-B/16 (supported with special handling for token pooling). Using
+ImageNet-pretrained weights provides robust low-level filters and accelerates
+convergence when fine-tuning for forensic tasks.
+
+\subsection{Convolutional Inductive Biases for Forensics}
+Convolutional architectures are well-suited for forensic analysis due to their
+local receptive fields and hierarchical composition. Early layers capture
+edges and textures while deeper layers encode increasingly semantic
+representations; this hierarchy supports detection of both local manipulations
+(inpainting seams) and more global inconsistencies (colour mismatches or
+artificial textures). Transformer-based backbones are supported to compare
+their global attention properties, but their tokenisation implies different
+trade-offs.
+
+\subsection{Pooling and Classification Head}
+After spatial aggregation (GeM or average pooling) the pooled vector is
+subjected to dropout (default 0.4) and then passed to a linear classification
+head mapping to three logits. The head construction is performed by
+\texttt{make_head(in_features)} in the training module and
+is tuned to each backbone's final feature dimensionality.
+
+\section{Preprocessing Feature Modules}
+\subsection{\textbf{Steganalysis Rich Model (SRM)}}
+\textbf{Implementation:} \texttt{SRMLayer} (SRM implementation)
+computes three fixed high-pass residual channels using handcrafted kernels
+(Laplacian 5×5, horizontal 5×5, vertical 5×5) applied to a grayscale image;
+residuals are clamped (default clamp range 2.0) and concatenated with RGB to
+form a 6-channel input. The helper \texttt{adapt_conv1_for_srm} modifies the
+backbone's first convolution to accept 6 channels by initialising additional
+weights to 0.1× the pretrained RGB weights.
+
+Justification: SRM residuals amplify small-scale discontinuities and blending
+seams that are often obscured by colour and texture in the RGB domain. By
+presenting these residuals explicitly to the network, early convolutions can
+detect structural anomalies that are indicative of manipulation.
+
+\subsection{\textbf{Fast Fourier Transform (FFT)}}
+\textbf{Implementation:} \texttt{FFTLayer} (FFT implementation)
+computes the log-magnitude of the centred 2D Fourier transform of the
+grayscale image, normalises it to [0,1], and returns a B×1×H×W tensor. When
+enabled, this channel is concatenated after RGB and SRM channels (rgb →
+residuals → fft) and the backbone's first convolution is adapted accordingly.
+
+Justification: Frequency-domain analysis reveals global periodicities and
+power-spectrum anomalies often characteristic of generative models or
+resampling introduced by editing tools. FFT magnitude provides complementary
+evidence to SRM and RGB features and can distinguish manipulation classes
+that are ambiguous in the spatial domain.
+
+\section{Attention and Pooling Mechanisms}
+\subsection{\textbf{CBAM Attention}: Channel and Spatial Attention}
+CBAM is implemented in the attention_heads module and applies
+channel attention (via pooled statistics and an MLP) followed by spatial
+attention (via concatenated avg/max maps and a convolution). Applied to late
+feature maps, CBAM reweights channels and spatial locations to emphasise
+forensically salient information.
+
+\subsection{\textbf{GeM Pooling}}
+\textbf{Implementation:} \texttt{GeM} (attention_heads implementation).
+Given activation map $X \in \mathbb{R}^{C\times H\times W}$ GeM computes:
+\[
+\mathrm{GeM}(X)_c =
+\left(
+\frac{1}{HW}
+\sum_{i=1}^{H}
+\sum_{j=1}^{W}
+X_{c,i,j}^{p}
+\right)^{1/p}
+\]
+The parameter $p$ (default 3.0) is registered as a tensor and may be frozen
+or learned. GeM interpolates between average ($p=1$) and max pooling
+($p\to\infty$), giving stronger emphasis to local high activations which are
+useful when small regions contain manipulation evidence.
+
+\subsection{Role of Attention and GeM in Forensics}
+Attention reduces the influence of irrelevant background structure and lets the
+model focus on high-signal regions. GeM ensures that strong local cues are
+preserved during aggregation rather than being diluted by large spatial
+averages; this property is particularly beneficial when manipulations occupy a
+small fraction of the image.
+
+\section{Model Architecture}
+\subsection{Input and \texttt{PreprocessNet} Wrapper}
+The input pipeline optionally applies \texttt{SRMLayer} and/or \texttt{FFTLayer}
+to an RGB tensor and concatenates channels in the order rgb → residuals → fft.
+The concatenated tensor is provided to an adapted backbone via the
+\texttt{PreprocessNet} wrapper implemented in the training module.
+
+\subsection{Backbone, Attention and Pooling}
+The adapted backbone (ResNet/ConvNeXt/EfficientNet/ViT) computes hierarchical
+features. \textbf{CBAM Attention} blocks may be inserted after late stages
+(for ResNet, after \texttt{layer4}; for ConvNeXt, after \texttt{features}) and
+\textbf{GeM Pooling} may replace the global average pooling layer. The
+resulting pooled vector is passed through a dropout layer and a linear
+classification head (softmax for probabilities).
+
+\subsection{Step-by-step Data Flow}
+\begin{enumerate}[label=\textbf{Step \arabic*:}]
+  \item Image file loaded (cv2) and converted BGR→RGB.
+  \item Training augmentations applied (Resize → geometric → photometric →
+  Normalize → \texttt{ToTensorV2}) or deterministic inference transforms used.
+  \item \texttt{SRMLayer} / \texttt{FFTLayer} modules compute additional
+  channels if enabled and outputs are concatenated with RGB.
+  \item The concatenated tensor is forwarded through the adapted backbone, with
+  optional \textbf{CBAM Attention} applied to late feature maps.
+  \item \textbf{GeM Pooling} or average pooling aggregates spatial maps to a
+  vector, followed by dropout and the final linear head producing three logits.
+\end{enumerate}
+
+\section{Training Procedure}
+\subsection{Losses and Class-weighting}
+The training code implements CrossEntropy, class-weighted CrossEntropy,
+\textbf{Focal Loss} (\texttt{FocalLoss}) and a factory \texttt{build_criterion}
+for WeightedFocalLoss. Default class weights are \texttt{[1.5, 1.0, 1.5]}. The
+default focal gamma in code is 3.0; however model cards and many experiments
+use $\gamma=2.0$ in practice. Label smoothing (commonly 0.1) is supported to
+reduce overconfidence.
+
+Rationale: Focal loss focuses optimisation on hard examples, which is useful
+when manipulated examples are subtle. Class weights compensate for residual
+sampling imbalance and emphasize operationally critical classes.
+
+\subsection{Optimisers, Schedules and Hyperparameters}
+Optimisers: Adam (default) and SGD (option). Default weight decay: 1e-4. The
+learning rate default is 1e-4. Schedulers: \textbf{Cosine Annealing}
+restarts (CosineAnnealingWarmRestarts with \texttt{T_0=20}, \texttt{T_mult=2}) for \texttt{lr_schedule='cosine'}, or ReduceLROnPlateau for \texttt{lr_schedule='plateau'}.
+Batch size default is 64 and default epochs is 50 (baseline scripts use
+smaller defaults for quick iterations). Early stopping and checkpointing save
+the best model (for example to the best model checkpoint) and per-epoch metrics
+are written to metrics CSV and training summary JSON files.
+
+Rationale: Cosine restarts provide periodic learning rate resets that help
+escape local minima during long runs; Adam provides adaptive gradient steps that
+are robust to noisy gradients introduced by augmentations.
+
+\subsection{Mixed Precision and Performance}
+Training uses AMP (\texttt{torch.amp.GradScaler}, \texttt{autocast}) and
+enables \texttt{torch.compile} when available. These pragmatics increase
+throughput and reduce memory footprint, enabling larger batch sizes and
+faster experimentation.
+
+\section{Evaluation Metrics}
+\subsection{Metrics Implemented}
+\begin{itemize}
+  \item \textbf{Accuracy}: overall fraction correct; logged as
+  \texttt{train_acc} and \texttt{val_acc}.
+  \item \textbf{Precision / Recall}: computed per-class; precision measures the
+  correctness of positive predictions while recall measures completeness of
+  detection for the true positives.
+  \item \textbf{F1 score}: harmonic mean of precision and recall; code computes
+  macro and per-class F1 using \texttt{sklearn.metrics.f1_score}.
+  \item \textbf{Confusion matrix}: reconstructed from saved logits and labels to
+  provide detailed misclassification patterns.
+\end{itemize}
+
+\subsection{ROC-AUC and Offline Analysis}
+ROC-AUC is not computed by default within the training scripts but can be
+derived offline from saved logits and labels. ROC-AUC is threshold-independent
+and especially useful when selecting operational thresholds that balance false
+positives and false-negatives.
+
+\subsection{Complementary Metric Usage}
+Accuracy gives a single-number summary but can conceal class-specific failures;
+precision, recall and F1 provide per-class diagnostic insight, while the
+confusion matrix reveals asymmetric confusions that guide dataset curation and
+loss reweighting.
+
+\section{Methodology Summary}
+This chapter has presented a principled methodology integrating dataset
+engineering, robust preprocessing, multi-domain feature extraction, attention
+and pooling mechanisms, and carefully chosen optimisation strategies. The
+approach is implemented in the repository with explicit modules to ensure
+reproducibility. Each design decision is motivated by forensic considerations:
+\textbf{Steganalysis Rich Model (SRM)} emphasises high-frequency residuals for
+local edit detection; \textbf{Fast Fourier Transform (FFT)} reveals global
+spectral fingerprints; \textbf{GeM Pooling} and \textbf{CBAM Attention}
+concentrate model capacity on salient, high-signal regions; and augmentation
+plus class-aware sampling promote robust generalisation. The subsequent
+chapters evaluate this methodology empirically and discuss limitations and
+avenues for future work.
+
+\section{Diagrams}
+The following subsections describe recommended diagrams. Each subsection lists
+\textbf{Components} and a short \textbf{Purpose} note.
+
+\subsection{Overall System Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item raw sources
+  \item indexing
+  \item validation
+  \item deduplication
+  \item sampling / balancing
+  \item cluster-aware splitter
+  \item exported train / val / test
+  \item training (\texttt{PreprocessNet} → Backbone → Head)
+  \item evaluation
+  \item model cards / metrics
+\end{itemize}
+\textbf{Purpose}
+End-to-end reproducible workflow from raw data to published experiment artifacts.
+ 
+\subsection{Dataset Preprocessing Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item indexing
+  \item validation checks (resolution / blur)
+  \item deduplication (pHash)
+  \item quota sampling
+  \item cluster-aware split
+  \item export
+\end{itemize}
+\textbf{Purpose}
+Clarifies steps that ensure dataset quality and avoid leakage; show conditional branches (invalid → rejected) and deterministic seeding.
+
+\subsection{CNN Backbone Architecture}
+\textbf{Components}
+\begin{itemize}
+  \item input
+  \item stem convs
+  \item residual / ConvNeXt blocks
+  \item stage outputs
+  \item pooling (Avg / GeM)
+  \item dropout
+  \item FC head
+\end{itemize}
+\textbf{Purpose}
+Hierarchical feature extraction for forensic signals (feature sizes: ResNet-18: 512; ConvNeXt: 768; ResNet-50: 2048).
+
+\subsection{SRM Filter Integration}
+\textbf{Components}
+\begin{itemize}
+  \item RGB → grayscale
+  \item three SRM kernels (Laplacian, horizontal, vertical)
+  \item residual maps
+  \item concatenation with RGB
+  \item adapted conv1 (0.1× init for extra channels)
+\end{itemize}
+\textbf{Purpose}
+Shows how residual channels are fused at model input and highlights how SRM buffers are stored in checkpoints.
+
+\subsection{FFT Feature Extraction}
+\textbf{Components}
+\begin{itemize}
+  \item grayscale → FFT → fftshift → log-magnitude
+  \item normalise → FFT channel concatenated with RGB / SRM
+\end{itemize}
+\textbf{Purpose}
+Documents spectral fingerprint extraction and the transformation from spatial to frequency domain and back to a spatially-aligned magnitude image.
+
+\subsection{Attention Module (CBAM)}
+\textbf{Components}
+\begin{itemize}
+  \item input feature map
+  \item channel attention (avg/max pools → MLP → sigmoid)
+  \item multiply
+  \item spatial attention (concat avg/max → conv → sigmoid)
+  \item multiply
+\end{itemize}
+\textbf{Purpose}
+Describes sequential application (channel → spatial) and how attention reweights channels and locations.
+
+\subsection{Feature Extraction Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item RGB → (optional SRM / FFT)
+  \item adapted backbone
+  \item attention
+  \item pooling (GeM)
+  \item feature vector → classifier head
+\end{itemize}
+\textbf{Purpose}
+Shows multi-domain fusion and final prediction flow.
+
+\subsection{Full Model Architecture}
+\textbf{Components}
+\begin{itemize}
+  \item \texttt{PreprocessNet} wrapper
+  \item backbone
+  \item optional \textbf{CBAM Attention}
+  \item \textbf{GeM Pooling}
+  \item dropout
+  \item fully connected classifier
+\end{itemize}
+\textbf{Purpose}
+Full neural network inference pipeline with tensor dimension and feature flow annotations.
+
+\subsection{Training Workflow}
+\textbf{Components}
+\begin{itemize}
+  \item DataLoader
+  \item augmentations
+  \item forward pass
+  \item loss computation
+  \item backward pass
+  \item optimizer step
+  \item scheduler update
+  \item checkpoint saving
+\end{itemize}
+\textbf{Purpose}
+Describes the training loop execution.
+
+\subsection{Evaluation Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item test dataset
+  \item inference
+  \item logits collection
+  \item metrics computation (accuracy, precision, recall, F1)
+  \item confusion matrix generation
+\end{itemize}
+\textbf{Purpose}
+Evaluation and result reporting.
+
+\end{document}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{longtable}
+\usepackage{setspace}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{url}
+\usepackage{xurl}
+\usepackage{geometry}
+\geometry{margin=1in}
+\graphicspath{{docs/figures/}}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+\usepackage{parskip}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{microtype}
+
+\onehalfspacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+\titlespacing*{\section}{0pt}{2em}{1em}
+\titlespacing*{\subsection}{0pt}{1.5em}{0.8em}
+\titlespacing*{\subsubsection}{0pt}{1.2em}{0.6em}
+
+\setlist[itemize]{itemsep=6pt, topsep=4pt}
+\setlist[enumerate]{itemsep=6pt, topsep=4pt}
+
+\onehalfspacing
+\setlength{\parskip}{0.6em}
+\setlength{\parindent}{0pt}
+
+\begin{document}
+\onehalfspacing
+
+\title{Methodology: Deepfake Detection System}
+\author{Auto-generated from repository}
+\date{\today}
+\maketitle
+\tableofcontents
+\clearpage
+
+\chapter{Methodology}
+
+\section{Methodology Overview}
+This chapter details the methodology employed to construct, train and evaluate
+the deepfake detection system implemented in this repository. The system
+integrates multiple complementary signal domains: spatial RGB appearance,
+handcrafted high-frequency residuals (\textbf{Steganalysis Rich Model (SRM)}), and frequency-domain magnitude
+features (\textbf{Fast Fourier Transform (FFT)}). These modalities are fused
+with modern deep feature extractors and lightweight attention/pooling modules.
+The pipeline comprises: dataset construction; preprocessing and augmentation;
+feature extraction using pretrained backbones; optional preprocessing modules
+(\texttt{SRMLayer} and \texttt{FFTLayer}); attention and pooling; optimisation and
+training; and evaluation. Implementation details are referenced directly to
+repository modules.
+
+The overarching design objective is to produce a classifier that reliably
+discriminates among three semantic classes: Real, AI Generated, and AI Edited.
+To this end, the methodology emphasises careful dataset curation to avoid
+leakage and ensure representativeness, multi-domain preprocessing that
+amplifies forensic cues, transfer learning from ImageNet-pretrained backbones
+to leverage robust low-level features, and attention and pooling mechanisms
+that concentrate model capacity on informative spatial and channel components.
+The following sections expand each part of the pipeline while preserving all
+factual implementation details present in the codebase.
+
+\section{Dataset Description}
+\subsection{Motivation for a Curated Dataset}
+Supervised forensic models are sensitive to dataset composition. Publicly
+available collections may be biased towards a narrow set of generative models
+or capture conditions; therefore the project implements a purpose-built,
+multi-source dataset assembled by the pipeline.
+This curation enables deterministic pre-processing, enforced class-balancing,
+and provenance metadata that supports reproducible experiments and rigorous
+error analysis.
+
+\subsection{Three-class Taxonomy}
+The dataset uses an explicit three-class taxonomy:
+\begin{itemize}
+  \item \textbf{Real (Class 0)} — original, unmanipulated images.
+  \item \textbf{AI Generated (Class 1)} — fully synthetic images produced by
+  generative models (GANs, diffusion models, etc.).
+  \item \textbf{AI Edited (Class 2)} — real images that have been edited (for
+  example via inpainting, face-swap, or localized retouching).
+\end{itemize}
+
+The separation of generated and edited classes enables the classifier to learn
+distinct signatures: global spectral fingerprints often indicate fully
+generated imagery, while localized residual anomalies better characterise
+editing operations.
+
+\subsection{Dataset Size, Splits and Export}
+Recorded counts are: real = 26,000; ai_generated = 26,000; ai_edited = 25,865; total = 77,865. The pipeline writes exported splits to export directories. While nominal YAML-configured ratios exist (70/15/15), the implemented cluster-aware splitter produces an empirical export approximating 40/30/30 in some runs; the split implementation is in the splitter module and is orchestrated by the dataset pipeline.
+
+\subsection{Class Balancing and Quota Sampling}
+The production pipeline enforces per-source quotas and overall class balance to
+prevent dominance of any single class or source. The sampling logic is in
+The sampling logic is implemented in the sampler module and deterministic
+behaviour is ensured via \texttt{set_global_seed} in the dataset pipeline.
+Balanced datasets reduce training bias and ensure that per-class metrics are
+meaningful for operational evaluation.
+
+\subsection{Source Diversity and Manipulation Types}
+The dataset aggregates diverse capture conditions and manipulation methods to
+improve generalisation. Diversity includes multiple camera models, compression
+artifacts, and generative model variants; manipulation types include full
+generation, inpainting, and face-swapping. The pipeline preserves provenance
+metadata (for example \path{export_index.csv}) to support stratified analyses
+by source or manipulation family.
+
+\subsection{Deduplication, Validation and Dataset Quality}
+Deduplication is performed with perceptual hashing and validation stages check
+resolution, blur and metadata (see the deduplicator and validator modules).
+Cluster-aware splitting
+ensures that related items (e.g. frames extracted from the same video) remain
+in the same split to prevent leakage. These steps are critical because low-
+quality or duplicated training examples encourage memorisation of source
+artifacts rather than learning transferable forensic cues.
+
+\section{Data Preprocessing}
+\subsection{Overview}
+Preprocessing responsibilities are split across dataset-level filtering and
+model-input preparation. Model-input preprocessing is implemented primarily in
+the preprocessing module and uses Albumentations for training-time
+augmentations and Torchvision transforms for deterministic inference-time
+processing. Optional preprocessing modules (\texttt{SRMLayer}, \texttt{FFTLayer})
+are implemented in dedicated SRM and FFT modules and are applied via the
+\texttt{PreprocessNet} wrapper in the training module.
+
+\subsection{Image Loading and Channel Ordering}
+At data ingest, images are read with OpenCV (BGR format) within the dataloader
+module. The loader performs an explicit BGR→RGB conversion prior to
+augmentation to align with pretrained backbones' expected channel ordering and
+avoid inadvertent color-space anomalies.
+
+\subsection{Resizing and Normalization}
+All inputs are resized to 224×224 during augmentation. Pixel normalisation uses
+ImageNet mean and standard deviation (mean=[0.485,0.456,0.406],
+std=[0.229,0.224,0.225]) to maintain consistency with pretrained feature
+initialisations. Conversion to PyTorch channel ordering (C,H,W) and floating
+tensor is performed by \texttt{ToTensorV2} as the final augmentation step.
+
+\subsection{Augmentation Modes and Techniques}
+Training augmentations are exposed as three named transforms via
+\texttt{get_train_transform(mode)}:
+\begin{itemize}
+  \item \texttt{light}: Resize(224,224), HorizontalFlip(p=0.5), Normalize(),
+  \texttt{ToTensorV2}.
+  \item \texttt{standard} (default): Resize(224,224), HorizontalFlip(p=0.5),
+  Rotate(limit=15,p=0.5), RandomBrightnessContrast(p=0.5),
+  ImageCompression(quality_range=(30,100),p=0.4), Normalize(), \texttt{ToTensorV2}.
+  \item \texttt{strong}: as \texttt{standard} with intensified ImageCompression
+  (20–95), additive noise (GaussNoise or ISONoise) and light blur (Gaussian or
+  Median) to simulate harsh capture conditions.
+\end{itemize}
+
+Rationale: Compression simulation addresses lossy storage/transmission; noise
+injection models sensor or post-processing noise; geometric transforms improve
+robustness to framing variations; blur reduces sensitivity to fine-grained
+texture so models learn coarser but more generalisable cues.
+
+\subsection{Training vs Inference Preprocessing}
+Training uses stochastic Albumentations to promote invariance, while
+inference applies deterministic Torchvision transforms (Resize, CenterCrop,
+ToTensor, Normalize) to ensure repeatable inputs and stable evaluation.
+
+\section{Feature Extraction}
+\subsection{Candidate Backbones and Feature Dimensions}
+The codebase supports multiple backbone families (constructed in
+\path{scripts/training/train_full.py}): ResNet-18/ResNet-50 (final features
+512/2048), ConvNeXt-Tiny/Small (final features 768), EfficientNet-B3 and
+ViT-B/16 (supported with special handling for token pooling). Using
+ImageNet-pretrained weights provides robust low-level filters and accelerates
+convergence when fine-tuning for forensic tasks.
+
+\subsection{Convolutional Inductive Biases for Forensics}
+Convolutional architectures are well-suited for forensic analysis due to their
+local receptive fields and hierarchical composition. Early layers capture
+edges and textures while deeper layers encode increasingly semantic
+representations; this hierarchy supports detection of both local manipulations
+(inpainting seams) and more global inconsistencies (colour mismatches or
+artificial textures). Transformer-based backbones are supported to compare
+their global attention properties, but their tokenisation implies different
+trade-offs.
+
+\subsection{Pooling and Classification Head}
+After spatial aggregation (GeM or average pooling) the pooled vector is
+subjected to dropout (default 0.4) and then passed to a linear classification
+head mapping to three logits. The head construction is performed by
+\texttt{make_head(in_features)} in \path{scripts/training/train_full.py} and
+is tuned to each backbone's final feature dimensionality.
+
+\section{Preprocessing Feature Modules}
+\subsection{\textbf{Steganalysis Rich Model (SRM)}}
+\textbf{Implementation:} \texttt{SRMLayer} (\path{scripts/preprocessing/srm.py})
+computes three fixed high-pass residual channels using handcrafted kernels
+(Laplacian 5×5, horizontal 5×5, vertical 5×5) applied to a grayscale image;
+residuals are clamped (default clamp range 2.0) and concatenated with RGB to
+form a 6-channel input. The helper \texttt{adapt_conv1_for_srm} modifies the
+backbone's first convolution to accept 6 channels by initialising additional
+weights to 0.1× the pretrained RGB weights.
+
+Justification: SRM residuals amplify small-scale discontinuities and blending
+seams that are often obscured by colour and texture in the RGB domain. By
+presenting these residuals explicitly to the network, early convolutions can
+detect structural anomalies that are indicative of manipulation.
+
+\subsection{\textbf{Fast Fourier Transform (FFT)}}
+\textbf{Implementation:} \texttt{FFTLayer} (\path{scripts/preprocessing/fft.py})
+computes the log-magnitude of the centred 2D Fourier transform of the
+grayscale image, normalises it to [0,1], and returns a B×1×H×W tensor. When
+enabled, this channel is concatenated after RGB and SRM channels (rgb →
+residuals → fft) and the backbone's first convolution is adapted accordingly.
+
+Justification: Frequency-domain analysis reveals global periodicities and
+power-spectrum anomalies often characteristic of generative models or
+resampling introduced by editing tools. FFT magnitude provides complementary
+evidence to SRM and RGB features and can distinguish manipulation classes
+that are ambiguous in the spatial domain.
+
+\section{Attention and Pooling Mechanisms}
+\subsection{\textbf{CBAM Attention}: Channel and Spatial Attention}
+CBAM is implemented in \path{scripts/modules/attention_heads.py} and applies
+channel attention (via pooled statistics and an MLP) followed by spatial
+attention (via concatenated avg/max maps and a convolution). Applied to late
+feature maps, CBAM reweights channels and spatial locations to emphasise
+forensically salient information.
+
+\subsection{\textbf{GeM Pooling}}
+\textbf{Implementation:} \texttt{GeM} (\path{scripts/modules/attention_heads.py}).
+Given activation map $X \in \mathbb{R}^{C\times H\times W}$ GeM computes:
+\[
+\mathrm{GeM}(X)_c =
+\left(
+\frac{1}{HW}
+\sum_{i=1}^{H}
+\sum_{j=1}^{W}
+X_{c,i,j}^{p}
+\right)^{1/p}
+\]
+The parameter $p$ (default 3.0) is registered as a tensor and may be frozen
+or learned. GeM interpolates between average ($p=1$) and max pooling
+($p\to\infty$), giving stronger emphasis to local high activations which are
+useful when small regions contain manipulation evidence.
+
+\subsection{Role of Attention and GeM in Forensics}
+Attention reduces the influence of irrelevant background structure and lets the
+model focus on high-signal regions. GeM ensures that strong local cues are
+preserved during aggregation rather than being diluted by large spatial
+averages; this property is particularly beneficial when manipulations occupy a
+small fraction of the image.
+
+\section{Model Architecture}
+\subsection{Input and \texttt{PreprocessNet} Wrapper}
+The input pipeline optionally applies \texttt{SRMLayer} and/or \texttt{FFTLayer}
+to an RGB tensor and concatenates channels in the order rgb → residuals → fft.
+The concatenated tensor is provided to an adapted backbone via the
+\texttt{PreprocessNet} wrapper implemented in \path{scripts/training/train_full.py}.
+
+\subsection{Backbone, Attention and Pooling}
+The adapted backbone (ResNet/ConvNeXt/EfficientNet/ViT) computes hierarchical
+features. \textbf{CBAM Attention} blocks may be inserted after late stages
+(for ResNet, after \path{layer4}; for ConvNeXt, after \path{features}) and
+\textbf{GeM Pooling} may replace the global average pooling layer. The
+resulting pooled vector is passed through a dropout layer and a linear
+classification head (softmax for probabilities).
+
+\subsection{Step-by-step Data Flow}
+\begin{enumerate}[label=\textbf{Step \arabic*:}]
+  \item Image file loaded (cv2) and converted BGR→RGB.
+  \item Training augmentations applied (Resize → geometric → photometric →
+  Normalize → \texttt{ToTensorV2}) or deterministic inference transforms used.
+  \item \texttt{SRMLayer} / \texttt{FFTLayer} modules compute additional
+  channels if enabled and outputs are concatenated with RGB.
+  \item The concatenated tensor is forwarded through the adapted backbone, with
+  optional \textbf{CBAM Attention} applied to late feature maps.
+  \item \textbf{GeM Pooling} or average pooling aggregates spatial maps to a
+  vector, followed by dropout and the final linear head producing three logits.
+\end{enumerate}
+
+\section{Training Procedure}
+\subsection{Losses and Class-weighting}
+The training code implements CrossEntropy, class-weighted CrossEntropy,
+\textbf{Focal Loss} (\texttt{FocalLoss}) and a factory \texttt{build_criterion}
+for WeightedFocalLoss. Default class weights are \path{[1.5, 1.0, 1.5]}. The
+default focal gamma in code is 3.0; however model cards and many experiments
+use $\gamma=2.0$ in practice. Label smoothing (commonly 0.1) is supported to
+reduce overconfidence.
+
+Rationale: Focal loss focuses optimisation on hard examples, which is useful
+when manipulated examples are subtle. Class weights compensate for residual
+sampling imbalance and emphasize operationally critical classes.
+
+\subsection{Optimisers, Schedules and Hyperparameters}
+Optimisers: Adam (default) and SGD (option). Default weight decay: 1e-4. The
+learning rate default is 1e-4. Schedulers: \textbf{Cosine Annealing}
+restarts (CosineAnnealingWarmRestarts with \texttt{T_0=20}, \texttt{T_mult=2}) for \texttt{lr_schedule='cosine'}, or ReduceLROnPlateau for \texttt{lr_schedule='plateau'}.
+Batch size default is 64 and default epochs is 50 (baseline scripts use
+smaller defaults for quick iterations). Early stopping and checkpointing save
+the best model (for example to \path{best_model.pth}) and per-epoch metrics
+are written to \path{metrics.csv} and \path{training_summary.json}.
+
+Rationale: Cosine restarts provide periodic learning rate resets that help
+escape local minima during long runs; Adam provides adaptive gradient steps that
+are robust to noisy gradients introduced by augmentations.
+
+\subsection{Mixed Precision and Performance}
+Training uses AMP (\texttt{torch.amp.GradScaler}, \texttt{autocast}) and
+enables \texttt{torch.compile} when available. These pragmatics increase
+throughput and reduce memory footprint, enabling larger batch sizes and
+faster experimentation.
+
+\section{Evaluation Metrics}
+\subsection{Metrics Implemented}
+\begin{itemize}
+  \item \textbf{Accuracy}: overall fraction correct; logged as
+  \path{train_acc} and \path{val_acc}.
+  \item \textbf{Precision / Recall}: computed per-class; precision measures the
+  correctness of positive predictions while recall measures completeness of
+  detection for the true positives.
+  \item \textbf{F1 score}: harmonic mean of precision and recall; code computes
+  macro and per-class F1 using \path{sklearn.metrics.f1_score}.
+  \item \textbf{Confusion matrix}: reconstructed from saved logits and labels to
+  provide detailed misclassification patterns.
+\end{itemize}
+
+\subsection{ROC-AUC and Offline Analysis}
+ROC-AUC is not computed by default within the training scripts but can be
+derived offline from saved logits and labels. ROC-AUC is threshold-independent
+and especially useful when selecting operational thresholds that balance false
+positives and false-negatives.
+
+\subsection{Complementary Metric Usage}
+Accuracy gives a single-number summary but can conceal class-specific failures;
+precision, recall and F1 provide per-class diagnostic insight, while the
+confusion matrix reveals asymmetric confusions that guide dataset curation and
+loss reweighting.
+
+\section{Methodology Summary}
+This chapter has presented a principled methodology integrating dataset
+engineering, robust preprocessing, multi-domain feature extraction, attention
+and pooling mechanisms, and carefully chosen optimisation strategies. The
+approach is implemented in the repository with explicit modules to ensure
+reproducibility. Each design decision is motivated by forensic considerations:
+\textbf{Steganalysis Rich Model (SRM)} emphasises high-frequency residuals for
+local edit detection; \textbf{Fast Fourier Transform (FFT)} reveals global
+spectral fingerprints; \textbf{GeM Pooling} and \textbf{CBAM Attention}
+concentrate model capacity on salient, high-signal regions; and augmentation
+plus class-aware sampling promote robust generalisation. The subsequent
+chapters evaluate this methodology empirically and discuss limitations and
+avenues for future work.
+
+\section{Diagrams}
+The following subsections describe recommended diagrams. Each subsection lists
+\textbf{Components} and a short \textbf{Purpose} note.
+
+\subsection{Overall System Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item raw sources
+  \item indexing
+  \item validation
+  \item deduplication
+  \item sampling / balancing
+  \item cluster-aware splitter
+  \item exported train / val / test
+  \item training (\texttt{PreprocessNet} → Backbone → Head)
+  \item evaluation
+  \item model cards / metrics
+\end{itemize}
+\textbf{Purpose}
+End-to-end reproducible workflow from raw data to published experiment artifacts.
+ 
+\subsection{Dataset Preprocessing Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item indexing
+  \item validation checks (resolution / blur)
+  \item deduplication (pHash)
+  \item quota sampling
+  \item cluster-aware split
+  \item export
+\end{itemize}
+\textbf{Purpose}
+Clarifies steps that ensure dataset quality and avoid leakage; show conditional branches (invalid → rejected) and deterministic seeding.
+
+\subsection{CNN Backbone Architecture}
+\textbf{Components}
+\begin{itemize}
+  \item input
+  \item stem convs
+  \item residual / ConvNeXt blocks
+  \item stage outputs
+  \item pooling (Avg / GeM)
+  \item dropout
+  \item FC head
+\end{itemize}
+\textbf{Purpose}
+Hierarchical feature extraction for forensic signals (feature sizes: ResNet-18: 512; ConvNeXt: 768; ResNet-50: 2048).
+
+\subsection{SRM Filter Integration}
+\textbf{Components}
+\begin{itemize}
+  \item RGB → grayscale
+  \item three SRM kernels (Laplacian, horizontal, vertical)
+  \item residual maps
+  \item concatenation with RGB
+  \item adapted conv1 (0.1× init for extra channels)
+\end{itemize}
+\textbf{Purpose}
+Shows how residual channels are fused at model input and highlights how SRM buffers are stored in checkpoints.
+
+\subsection{FFT Feature Extraction}
+\textbf{Components}
+\begin{itemize}
+  \item grayscale → FFT → fftshift → log-magnitude
+  \item normalise → FFT channel concatenated with RGB / SRM
+\end{itemize}
+\textbf{Purpose}
+Documents spectral fingerprint extraction and the transformation from spatial to frequency domain and back to a spatially-aligned magnitude image.
+
+\subsection{Attention Module (CBAM)}
+\textbf{Components}
+\begin{itemize}
+  \item input feature map
+  \item channel attention (avg/max pools → MLP → sigmoid)
+  \item multiply
+  \item spatial attention (concat avg/max → conv → sigmoid)
+  \item multiply
+\end{itemize}
+\textbf{Purpose}
+Describes sequential application (channel → spatial) and how attention reweights channels and locations.
+
+\subsection{Feature Extraction Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item RGB → (optional SRM / FFT)
+  \item adapted backbone
+  \item attention
+  \item pooling (GeM)
+  \item feature vector → classifier head
+\end{itemize}
+\textbf{Purpose}
+Shows multi-domain fusion and final prediction flow.
+
+\subsection{Full Model Architecture}
+\textbf{Components}
+\begin{itemize}
+  \item \texttt{PreprocessNet} wrapper
+  \item backbone
+  \item optional \textbf{CBAM Attention}
+  \item \textbf{GeM Pooling}
+  \item dropout
+  \item fully connected classifier
+\end{itemize}
+\textbf{Purpose}
+Full neural network inference pipeline with tensor dimension and feature flow annotations.
+
+\subsection{Training Workflow}
+\textbf{Components}
+\begin{itemize}
+  \item DataLoader
+  \item augmentations
+  \item forward pass
+  \item loss computation
+  \item backward pass
+  \item optimizer step
+  \item scheduler update
+  \item checkpoint saving
+\end{itemize}
+\textbf{Purpose}
+Describes the training loop execution.
+
+\subsection{Evaluation Pipeline}
+\textbf{Components}
+\begin{itemize}
+  \item test dataset
+  \item inference
+  \item logits collection
+  \item metrics computation (accuracy, precision, recall, F1)
+  \item confusion matrix generation
+\end{itemize}
+\textbf{Purpose}
+Evaluation and result reporting.
+
+\end{document}

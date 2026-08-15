@@ -1,0 +1,21 @@
+digraph data_loading_pipeline {
+	graph [dpi=300 nodesep=0.7 rankdir=LR ranksep=0.8]
+	node [fontsize=10 shape=box style=rounded]
+	edge [arrowsize=0.7]
+	folders [label="Dataset folders
+(train/val/test)"]
+	load [label="Image loading"]
+	bgr_rgb [label="BGR → RGB
+conversion"]
+	alb [label="Albumentations
+transforms"]
+	dataloader [label="DataLoader
+batching"]
+	batch [label="Mini-batch
+tensors"]
+	folders -> load [fontsize=8]
+	load -> bgr_rgb [fontsize=8]
+	bgr_rgb -> alb [fontsize=8]
+	alb -> dataloader [fontsize=8]
+	dataloader -> batch [fontsize=8]
+}

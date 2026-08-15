@@ -1,0 +1,32 @@
+digraph model_execution_flow {
+	graph [dpi=300 nodesep=0.7 rankdir=LR ranksep=0.8]
+	node [fontsize=10 shape=box style=rounded]
+	edge [arrowsize=0.7]
+	input [label="Input image"]
+	rgb [label="RGB
+preprocessing"]
+	srm [label="SRM layer"]
+	fft [label="FFT layer"]
+	concat [label="Channel
+concatenation"]
+	backbone [label="Backbone
+network"]
+	attention [label="Attention
+module"]
+	pool [label=Pooling]
+	fc [label="Fully connected
+classifier"]
+	softmax [label="Softmax
+probabilities"]
+	input -> rgb [fontsize=8]
+	rgb -> srm [fontsize=8]
+	rgb -> fft [fontsize=8]
+	srm -> concat [fontsize=8]
+	fft -> concat [fontsize=8]
+	rgb -> concat [fontsize=8 style=dashed]
+	concat -> backbone [fontsize=8]
+	backbone -> attention [fontsize=8]
+	attention -> pool [fontsize=8]
+	pool -> fc [fontsize=8]
+	fc -> softmax [fontsize=8]
+}

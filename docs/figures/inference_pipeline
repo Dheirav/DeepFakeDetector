@@ -1,0 +1,27 @@
+digraph inference_and_gradcam_pipeline {
+	graph [dpi=300 nodesep=0.7 rankdir=LR ranksep=0.8]
+	node [fontsize=10 shape=box style=rounded]
+	edge [arrowsize=0.7]
+	upload [label="User upload"]
+	validate [label="Image validation"]
+	preprocess [label=Preprocessing]
+	inference [label="Model inference"]
+	softmax [label="Softmax
+prediction"]
+	gradcam [label="GradCAM
+generation"]
+	overlay [label="Heatmap
+overlay"]
+	ui [label="User interface
+display"]
+	upload -> validate [fontsize=8]
+	validate -> preprocess [fontsize=8]
+	preprocess -> inference [fontsize=8]
+	inference -> softmax [fontsize=8]
+	softmax -> ui [label="class +
+probabilities" fontsize=8]
+	inference -> gradcam [label="features +
+logits" fontsize=8]
+	gradcam -> overlay [fontsize=8]
+	overlay -> ui [label=explanations fontsize=8]
+}

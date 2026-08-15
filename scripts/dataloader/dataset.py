@@ -10,11 +10,26 @@ class DeepfakeDataset(Dataset):
         "ai_edited": 2
     }
 
-    def __init__(self, root_dir, transform=None):
+    def __init__(self, root_dir, transform=None, include_classes=None):
+        """Dataset loader for folder-structured deepfake data.
+
+        Args:
+            root_dir (str): Root directory containing class subfolders.
+            transform (callable, optional): Albumentations transform to apply.
+            include_classes (list[str], optional): If provided, only subfolders
+                whose names are in this list will be scanned. Default None
+                preserves existing behaviour (all known classes).
+        """
         self.samples = []
         self.transform = transform
 
-        for cls in self.label_map:
+        classes_to_scan = include_classes if include_classes is not None else list(self.label_map.keys())
+
+        for cls in classes_to_scan:
+            if cls not in self.label_map:
+                # skip unknown names but warn the user
+                print(f"[DeepfakeDataset] Warning: unknown class requested: {cls}")
+                continue
             cls_path = os.path.join(root_dir, cls)
             if not os.path.isdir(cls_path):
                 print(f"[DeepfakeDataset] Warning: class folder not found, skipping: {cls_path}")

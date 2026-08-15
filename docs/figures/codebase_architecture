@@ -1,0 +1,44 @@
+digraph codebase_architecture {
+	graph [dpi=300 nodesep=0.6 rankdir=LR ranksep=0.8]
+	node [fontsize=10 shape=box style=rounded]
+	edge [arrowsize=0.7]
+	raw [label="Raw datasets"]
+	dataset_builder [label="dataset_builder/"]
+	scripts [label="scripts/"]
+	frontend [label="frontend/"]
+	models [label="models/"]
+	results [label="results/"]
+	logs [label="logs/"]
+	subgraph cluster_scripts {
+		fontsize=11 label="scripts/" style="rounded,dashed"
+		scripts_data [label="data/"]
+		scripts_preprocessing [label="preprocessing/"]
+		scripts_dataloader [label="dataloader/"]
+		scripts_training [label="training/"]
+		scripts_evaluation [label="evaluation/"]
+		scripts_explainability [label="explainability/"]
+		scripts_root [label="scripts/" fillcolor="#f5f5f5" style="rounded,filled"]
+		scripts_root -> scripts_data
+		scripts_root -> scripts_preprocessing
+		scripts_root -> scripts_dataloader
+		scripts_root -> scripts_training
+		scripts_root -> scripts_evaluation
+		scripts_root -> scripts_explainability
+	}
+	train [label="train/"]
+	val [label="val/"]
+	test [label="test/"]
+	raw -> dataset_builder [label="" fontsize=8]
+	dataset_builder -> train [label="" fontsize=8]
+	dataset_builder -> val [label="" fontsize=8]
+	dataset_builder -> test [label="" fontsize=8]
+	train -> scripts_training [label="training data" fontsize=8]
+	val -> scripts_training [label="validation data" fontsize=8]
+	scripts_training -> models [label=checkpoints fontsize=8]
+	models -> scripts_evaluation [label="trained models" fontsize=8]
+	models -> frontend [label="deployed models" fontsize=8]
+	scripts_evaluation -> results [label="metrics, plots" fontsize=8]
+	scripts_training -> results [fontsize=8 style=dashed]
+	scripts_training -> logs [fontsize=8 style=dashed]
+	dataset_builder -> logs [fontsize=8 style=dashed]
+}

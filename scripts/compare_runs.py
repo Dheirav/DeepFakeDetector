@@ -42,6 +42,26 @@ matplotlib.rcParams.update(
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 CLASS_NAMES = ["Real", "AI-Generated", "AI-Edited"]
+DISPLAY_NAMES = {
+    "resnet18_srm_focal_wd": "ResNet-18 SRM+Focal",
+    "convnext_srm_focal": "ConvNeXt-Tiny ",
+}
+
+
+def short_display(name: str, max_len: int = 28) -> str:
+    """Create a shortened, human-friendly label for plotting.
+
+    - replace underscores with spaces
+    - collapse repeated whitespace
+    - trim long names with ellipsis
+    """
+    disp = DISPLAY_NAMES.get(name, name)
+    s = disp.replace("__", " ").replace("_", " ")
+    s = " ".join(s.split())
+    if len(s) <= max_len:
+        return s
+    head = s[: max_len - 3]
+    return head.rstrip() + "..."
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 OUTPUT_DIR = RESULTS_DIR / "comparison"
 
@@ -166,7 +186,7 @@ def plot_val_accuracy_curves(ax, runs, palette):
         m = r["metrics"]
         if "val_acc" not in m.columns:
             continue
-        name = DISPLAY_NAMES.get(r["name"], r["name"])
+        name = short_display(r["name"])
         alpha = 0.35 if r["name"] in BASELINE_RUNS else 1.0
         lw = 2.5 if r["name"] not in BASELINE_RUNS else 1.2
         ax.plot(
@@ -181,7 +201,8 @@ def plot_val_accuracy_curves(ax, runs, palette):
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Val Accuracy (%)")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
-    ax.legend(fontsize=7, loc="lower right")
+    # move legend outside to avoid covering lines
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=6, frameon=False)
 
 
 def plot_train_val_curves(ax, runs, palette):
@@ -190,7 +211,7 @@ def plot_train_val_curves(ax, runs, palette):
         m = r["metrics"]
         if "train_acc" not in m.columns or "val_acc" not in m.columns:
             continue
-        name = DISPLAY_NAMES.get(r["name"], r["name"])
+        name = short_display(r["name"])
         alpha = 0.35 if r["name"] in BASELINE_RUNS else 1.0
         c = palette[r["name"]]
         ax.plot(m["epoch"], m["train_acc"] * 100, linestyle="--", color=c, alpha=alpha * 0.6, linewidth=1)
@@ -199,14 +220,14 @@ def plot_train_val_curves(ax, runs, palette):
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Accuracy (%)")
     ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=6, frameon=False)
 
 
 def plot_test_accuracy_bar(ax, runs, palette):
     """Bar chart: test accuracy per model (sorted descending)."""
     evaluated = [r for r in runs if r["test_acc"] is not None]
     evaluated_sorted = sorted(evaluated, key=lambda r: r["test_acc"])
-    names = [DISPLAY_NAMES.get(r["name"], r["name"]) for r in evaluated_sorted]
+    names = [short_display(r["name"]) for r in evaluated_sorted]
     accs = [r["test_acc"] * 100 for r in evaluated_sorted]
     colours = [palette[r["name"]] for r in evaluated_sorted]
     alphas = [0.45 if r["name"] in BASELINE_RUNS else 1.0 for r in evaluated_sorted]
@@ -228,6 +249,8 @@ def plot_test_accuracy_bar(ax, runs, palette):
     ax.set_title("Test Accuracy", fontweight="bold")
     ax.set_xlabel("Accuracy (%)")
     ax.xaxis.set_major_formatter(mticker.FormatStrFormatter("%.0f%%"))
+    # keep y labels readable but small
+    ax.tick_params(axis="y", labelsize=7)
     # x-axis starts near the minimum for readability
     if accs:
         ax.set_xlim(max(0, min(accs) - 3), min(100, max(accs) + 3))
@@ -246,7 +269,7 @@ def plot_f1_per_class_bar(ax, runs, palette):
     width = 0.8 / n_runs
 
     for i, r in enumerate(evaluated):
-        name = DISPLAY_NAMES.get(r["name"], r["name"])
+        name = short_display(r["name"])
         alpha = 0.45 if r["name"] in BASELINE_RUNS else 1.0
         offset = (i - n_runs / 2 + 0.5) * width
         bars = ax.bar(
@@ -263,7 +286,7 @@ def plot_f1_per_class_bar(ax, runs, palette):
     ax.set_xticks(x)
     ax.set_xticklabels(CLASS_NAMES)
     ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=7, loc="lower right")
+    ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=6, frameon=False)
 
 
 def plot_overfitting_gap(ax, runs, palette):
@@ -282,7 +305,7 @@ def plot_overfitting_gap(ax, runs, palette):
         key=lambda r: (r["metrics"]["train_acc"].iloc[-1] - r["metrics"]["val_acc"].iloc[-1]),
         reverse=True,
     )
-    names = [DISPLAY_NAMES.get(r["name"], r["name"]) for r in evaluated_sorted]
+    names = [short_display(r["name"]) for r in evaluated_sorted]
     gaps = [
         (r["metrics"]["train_acc"].iloc[-1] - r["metrics"]["val_acc"].iloc[-1]) * 100
         for r in evaluated_sorted
@@ -304,6 +327,7 @@ def plot_overfitting_gap(ax, runs, palette):
     ax.set_title("Train−Val Gap (final epoch)", fontweight="bold")
     ax.set_xlabel("Gap (percentage points)")
     ax.axvline(0, color="black", linewidth=0.8)
+    ax.tick_params(axis="y", labelsize=7)
 
 
 def plot_confusion_matrix(ax, run, title_suffix=""):
@@ -369,7 +393,7 @@ def print_summary_table(runs):
 
         rows.append(
             {
-                "Run": DISPLAY_NAMES.get(r["name"], r["name"]),
+                "Run": short_display(r["name"]),
                 "Backbone": backbone,
                 "Dropout": dropout,
                 "LR Schedule": lr_sched,
@@ -498,14 +522,14 @@ def main():
         fig3, ax3 = plt.subplots(figsize=(10, 5))
         for r in runs_with_loss:
             m = r["metrics"]
-            name = DISPLAY_NAMES.get(r["name"], r["name"])
+            name = short_display(r["name"])
             alpha = 0.35 if r["name"] in BASELINE_RUNS else 1.0
             ax3.plot(m["epoch"], m["train_loss"], linestyle="--", color=palette[r["name"]], alpha=alpha * 0.5, linewidth=1)
             ax3.plot(m["epoch"], m["val_loss"], color=palette[r["name"]], alpha=alpha, linewidth=2, label=name)
         ax3.set_title("Train (dashed) vs Val Loss", fontweight="bold")
         ax3.set_xlabel("Epoch")
         ax3.set_ylabel("Loss")
-        ax3.legend(fontsize=7)
+        ax3.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=6, frameon=False)
         fig3.tight_layout()
         fig3_path = output_dir / "loss_curves.png"
         fig3.savefig(fig3_path, bbox_inches="tight", dpi=150)
