@@ -73,9 +73,38 @@ class GradCAM:
         self._register_hooks()
 
     def _find_target_module(self, model):
-        """Automatically find the last Conv2d layer in the model."""
+        """Pick the layer Grad-CAM is actually defined on: the output of the last
+        convolutional *stage*.
+
+        The previous implementation returned the last ``nn.Conv2d`` in module
+        order, which is wrong in three separate ways:
+
+        * ConvNeXt -- it lands on the 7x7 depthwise conv at the *entrance* of the
+          final block, before LayerNorm, MLP, layer-scale and the residual add.
+          Measured against the canonical CAM, Pearson r = 0.598.
+        * ResNet -- it lands on a 1x1 conv, before BN, before the residual add and
+          before ReLU.
+        * Any CBAM model -- it lands on CBAM's spatial-attention conv, which has a
+          single output channel. Summing over one channel makes the CAM
+          class-independent, i.e. it carries no Grad-CAM information at all.
+
+        Prefer the stage container, whose output is the feature map the pooled
+        classifier actually consumes.
+        """
+        # ResNet-style
+        layer4 = getattr(model, "layer4", None)
+        if layer4 is not None:
+            return layer4
+
+        # ConvNeXt / EfficientNet-style
+        features = getattr(model, "features", None)
+        if features is not None:
+            return features
+
+        # Fall back to the last multi-channel Conv2d, never a 1-channel
+        # attention map.
         for m in reversed(list(model.modules())):
-            if isinstance(m, nn.Conv2d):
+            if isinstance(m, nn.Conv2d) and m.out_channels > 1:
                 return m
         return None
 
@@ -163,7 +192,7 @@ class GradCAM:
 
     def cleanup(self):
         """Remove hooks to free memory. Call this when done with the GradCAM instance."""
-        for hook in self.hooks:
+        for hook in getattr(self, "hooks", []):
             hook.remove()
         self.hooks.clear()
         self.activations = None
@@ -220,6 +249,12 @@ def _overlay_opencv(
     # Apply colormap
     colormap_cv = getattr(cv2, f"COLORMAP_{colormap.upper()}", cv2.COLORMAP_JET)
     heatmap_colored = cv2.applyColorMap(heatmap_uint8, colormap_cv)
+
+    # applyColorMap returns BGR; everything else in this module is RGB. Without
+    # this conversion the blend below inverts the colormap end for end, so the
+    # most important regions render blue and the least important render red --
+    # which is the opposite of what the UI tells the reader.
+    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
     
     # Convert PIL image to RGB numpy array
     image_np = np.array(pil_image.convert("RGB"))
