@@ -76,7 +76,7 @@ Actual AI-Edit    1493         169           6092
 
 ### Key observations
 - **AI Generated** is the easiest class (F1 0.921) — the model confidently separates synthetic images
-- **Real** is the hardest class — 1,252 real images leaked into AI-Edited (11.5% of Real support)
+- **Real** is the hardest class — 1,252 real images leaked into AI-Edited (**16.06%** of Real support *(corrected 2026-09-08; 1252/7795. The card previously said 11.5%.)*)
 - **AI Edited** is mid-difficulty — 1,493 AI-edited images predicted as Real (the toughest boundary)
 
 ---

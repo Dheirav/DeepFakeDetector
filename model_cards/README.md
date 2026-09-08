@@ -2,6 +2,34 @@
 
 One card per trained checkpoint. Each card documents architecture, training config, val metrics, and test set evaluation results.
 
+> ## ⚠️ Audited 2026-09-08
+>
+> **The leaderboard tables below verify.** All Val/Test/F1 cells in the sweep table
+> and the per-class support counts (7,795 / 7,792 / 7,754) reproduce from the run
+> artifacts to 3–4 d.p.
+>
+> **What does not verify:**
+> - **21 of 22 checkpoint paths named in these cards no longer exist.** `models/`
+>   was renamed to the numbered scheme in commit `a451d5d8` and the cards were
+>   never updated. Only `models/sweep_w150_100_150/best_resnet18.pth` survives.
+>   Every storage total below is therefore describing files that are gone.
+> - **The sweep budget was 20 epochs, not 10** (`config.epochs: 20` in all eight).
+> - Two cards claim early stopping at patience 3; **`sweep_w200_080_150` and
+>   `sweep_w200_100_200` both ran the full 20 epochs.**
+> - `sweep_w150_100_150` claims it "converged fastest (13 ep)" — that is a
+>   **three-way tie** with `w150_100_200` and `w200_080_200`.
+> - `sweep_w300_100_150` claims the lowest AI-Edit F1 at 0.7985; **0.7951 is lower.**
+> - In the sweep table, **F1-Real 0.773 is bolded at rank 2 while rank 1 has 0.775.**
+> - Individual cards with corrected figures: `convnext_srm_focal.md` (precision and
+>   recall cells — F1 and accuracy were correct), `resnet18_srm_focal_wd.md`,
+>   `convnext_augv4_standard.md` (seed), `resnet18_dropout_cosine.md` and
+>   `resnet18_ce_baseline.md` (epoch-15 rows).
+>
+> **More importantly, every accuracy in these cards is inflated and none measures
+> generalisation** — 4.34% of the test set is byte-identical to a training image,
+> and file metadata alone reaches 87.4% on this task. Read
+> [`../LIMITATIONS.md`](../LIMITATIONS.md) before quoting anything here.
+
 ## Current Best
 
 | Model | Backbone | Test Acc | F1 Macro | Status |
@@ -48,7 +76,10 @@ Architecture and regularisation experiments run after the weight sweep, using be
 
 ---
 
-## Weight Sweep Models (ResNet-18 + SRM + WeightedFocalLoss, 10 ep budget)
+## Weight Sweep Models (ResNet-18 + SRM + WeightedFocalLoss, **20** ep budget)
+
+*Corrected 2026-09-08: the heading previously said 10 epochs; `config.epochs` is 20
+in all eight runs. Epochs actually trained: 13, 13, 20, 13, 16, 20, 17, 17.*
 
 All sweep models share the same architecture and hyperparameters; only `class_weights` differs.  
 Ranked by validation accuracy. Test accuracy from `evaluate.py` on `dataset_builder/test/` (23,341 samples).
@@ -56,7 +87,7 @@ Ranked by validation accuracy. Test accuracy from `evaluate.py` on `dataset_buil
 | Rank | Model | Weights [Real, AIGen, AIEdit] | Val Acc | Test Acc | F1 Real | F1 AI-Gen | F1 AI-Edit | Storage |
 |---|---|---|---|---|---|---|---|---|
 | 1 ★ | [sweep_w150_100_150](sweep_w150_100_150.md) | [1.5, 1.0, 1.5] | 82.94% | **83.31%** | 0.775 | 0.924 | 0.802 | 172 MB |
-| 2 | [sweep_w300_100_150](sweep_w300_100_150.md) | [3.0, 1.0, 1.5] | 82.83% | 82.91% | **0.773** | 0.920 | 0.798 | 172 MB |
+| 2 | [sweep_w300_100_150](sweep_w300_100_150.md) | [3.0, 1.0, 1.5] | 82.83% | 82.91% | 0.773 | 0.920 | 0.798 | 172 MB |
 | 3 | [sweep_w200_100_200](sweep_w200_100_200.md) | [2.0, 1.0, 2.0] | 82.73% | 82.86% | 0.764 | 0.921 | 0.803 | 172 MB |
 | 4 | [sweep_w250_100_150](sweep_w250_100_150.md) | [2.5, 1.0, 1.5] | 82.67% | 82.90% | 0.773 | 0.919 | 0.801 | 172 MB |
 | 5 | [sweep_w150_100_200](sweep_w150_100_200.md) | [1.5, 1.0, 2.0] | 82.63% | 82.85% | 0.759 | 0.922 | **0.804** | 172 MB |
@@ -81,6 +112,11 @@ Ranked by validation accuracy. Test accuracy from `evaluate.py` on `dataset_buil
 ---
 
 ### Storage summary (all runs)
+
+> **⚠️ Obsolete.** These totals describe checkpoint paths that no longer exist —
+> 21 of the 22 referenced `.pth` files are gone. Actual surviving checkpoint
+> storage is ~172 MB (one sweep model) plus the 25 numbered-run checkpoints under
+> `models/`, which is gitignored.
 
 | Run | models/ | results/ |
 |---|---|---|

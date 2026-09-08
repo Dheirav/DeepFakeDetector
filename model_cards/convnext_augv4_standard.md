@@ -1,5 +1,7 @@
 # Model Card — convnext_augv4_standard
 
+> **Corrected 2026-09-08.** This card recorded seed = 20. `results/10/training_summary.json` records **seed = 42**.
+
 ## Overview
 
 | Field | Value |
@@ -26,7 +28,7 @@
 | LR schedule | cosine |
 | Augmentation | **standard** |
 | SRM | enabled |
-| Seed | 20 |
+| Seed | 42 |
 
 ---
 

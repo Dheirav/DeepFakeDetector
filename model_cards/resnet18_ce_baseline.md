@@ -39,7 +39,12 @@
 | 1 | 0.5784 | 73.3% | 0.4821 | 78.1% | 0.783 |
 | 5 | 0.2568 | 89.4% | 0.5125 | 80.7% | 0.810 |
 | 10 | 0.0659 | 97.8% | 0.6103 | 82.6% | 0.826 |
-| **15 (best)** | **0.0402** | **98.7%** | **0.6823** | **82.6%** | **0.821** |
+| 15 (last) | 0.0402 | 98.7% | 0.6823 | **82.13%** | **0.821** |
+
+> *Corrected 2026-09-08: epoch 15 was labelled "(best)" and its val accuracy given as
+> 82.6%. `results/01/metrics.csv` records epoch 15 at **0.8213**. The best epoch was
+> **10** at 0.8263 — which is the 82.63% quoted below, correctly valued but attributed
+> to the wrong epoch.*
 
 > Early stopping triggered at epoch 15 (patience=5).
 
@@ -50,7 +55,11 @@
 
 ## Test Set Evaluation
 
-Not evaluated on held-out test set for this run.
+**Corrected 2026-09-08 — it was evaluated.** `results/01/y_true.npy` and `y_pred.npy`
+exist and give **82.73%** test accuracy on the 23,341-image held-out split. This is the
+number headlined in the project README, and all nine cells of that README table reproduce
+from these two files to 4 d.p. See [`../LIMITATIONS.md`](../LIMITATIONS.md) for why it is
+inflated and what it does not measure.
 
 ---
 

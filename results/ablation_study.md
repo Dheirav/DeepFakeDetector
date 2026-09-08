@@ -1,5 +1,36 @@
 # Ablation Study — Deepfake Detection Experiments
 
+> ## ⚠️ CORRECTED 2026-09-08 — read this before any number below
+>
+> An audit invalidated this document's central conclusions. Corrections are
+> inline; the original rows are struck through rather than deleted so the record
+> is auditable.
+>
+> 1. **Runs 23, 24, 25 and 26 do not contain the components their folder names
+>    claim.** All four record `attention_head: "none"` in `training_summary.json`,
+>    and the weights confirm it: run 26 has no CBAM tensors (345 keys vs run 18's
+>    348), and runs 23/25 have no `avgpool.p` (which GeM *does* save — runs 15 and
+>    17 have it). Key-set diffs are empty: `set(25) − set(21) = {}`.
+>    **The "Attention (CBAM)" and "Pooling (GeM)" rows below describe models
+>    containing neither.**
+> 2. **All comparisons below used `best_val_acc`**, a max over 20–30 noisy epochs
+>    on the *model-selection* split. That is a biased estimator and it favours
+>    whichever run happened to spike. Test-set numbers tell a different story.
+> 3. **The measured noise floor is 0.15 pp.** Runs 25 and 26 differ in no recorded
+>    config field — they are an accidental replicate. They disagree on 991 of
+>    23,341 test samples; McNemar p = 0.28. **Every effect claimed below is
+>    smaller than that.**
+> 4. **Runs 25/26 differ from the baseline in two ways, not one** — `focal_gamma`
+>    (2.0 vs run 19's 3.0) *and* SRM. They were never a clean single-variable
+>    ablation.
+> 5. **`results/18/` and `results/20/` saved predictions are corrupt.** Run 20's
+>    `y_pred.npy` is 34.91% (chance) against an 88.37% training log, because
+>    `evaluate.py` rebuilt it as a 100% randomly-initialised network. Run 18's is
+>    70.94% vs 83.56%, because it was rebuilt as a truncated ConvNeXt-Tiny. Do not
+>    use either.
+>
+> Evidence: [`../docs/REVIEW_2026-09-08.md`](../docs/REVIEW_2026-09-08.md).
+
 This document summarizes the ablation study using only experiments and metrics present in the repository `results/` run folders. All metric values are taken from each run's `training_summary.json` and `metrics.csv` where noted; file links are provided.
 
 ## Quick summary
@@ -44,24 +75,66 @@ Notes:
 
 Baseline reference: `results/19__convnext-small__light__0.4__cosine__focal__none` — convnext_small, RGB-only, best val acc = 0.8940 ([training_summary.json](results/19__convnext-small__light__0.4__cosine__focal__none/training_summary.json#L1)).
 
+**⚠️ The two bottom rows of this table are wrong — see correction 1 above.**
+
 | Model Variant | Representative Run | Backbone | SRM | FFT | Attention | Pooling | Best val acc | Source |
 |---|---|---:|:---:|:---:|:---:|:---:|---:|---|
 | Baseline (RGB only) | 19 | convnext_small | no | no | none | Avg | 0.8940 | [results/19/.../training_summary.json](results/19__convnext-small__light__0.4__cosine__focal__none/training_summary.json#L1) |
 | CNN + SRM | 21 | convnext_small | yes | no | none | Avg | 0.8954 | [results/21/.../training_summary.json](results/21__convnext-small__light__0.4__cosine__focal__srm/training_summary.json#L1) |
 | CNN + FFT | 20 | convnext_small | no | yes | none | Avg | 0.8837 | [results/20/.../training_summary.json](results/20__convnext-small__light__0.4__cosine__focal__fft/training_summary.json#L1) |
 | CNN + SRM + FFT (multi-domain) | 22 | convnext_small | yes | yes | none | Avg | 0.8934 | [results/22/.../training_summary.json](results/22__convnext-small__light__0.4__cosine__focal__srm-fft/training_summary.json#L1) |
-| Attention (CBAM) | 26 | convnext_small | yes | no | cbam | Avg | 0.8933 | [results/26/.../training_summary.json](results/26__convnext-small__light__0.4__cosine__focal__srm-cbam/training_summary.json#L1) |
-| Pooling (GeM) | 25 | convnext_small | yes | no | none | GeM | 0.8952 | [results/25/.../training_summary.json](results/25__convnext-small__light__0.4__cosine__focal__srm-gem/training_summary.json#L1) |
+| ~~Attention (CBAM)~~ **NO CBAM PRESENT** | 26 | convnext_small | yes | no | **none** | Avg | 0.8933 | [results/26/.../training_summary.json](results/26__convnext-small__light__0.4__cosine__focal__srm-cbam/training_summary.json#L1) |
+| ~~Pooling (GeM)~~ **NO GeM PRESENT** | 25 | convnext_small | yes | no | none | **Avg** | 0.8952 | [results/25/.../training_summary.json](results/25__convnext-small__light__0.4__cosine__focal__srm-gem/training_summary.json#L1) |
 
-### Improvement vs baseline (best-val comparison)
-- Baseline (run 19): 0.8940 (reference)
-- CNN + SRM (run 21): 0.8954 → +0.0014 (+0.14 percentage points)
-- CNN + FFT (run 20): 0.8837 → −0.0103 (−1.03 points)
-- CNN + SRM + FFT (run 22): 0.8934 → −0.0006 (−0.06 points)
-- Attention (CBAM, run 26): 0.8933 → −0.0007 (−0.07 points)
-- Pooling (GeM, run 25): 0.8952 → +0.0012 (+0.12 points)
+### ~~Improvement vs baseline (best-val comparison)~~ — WITHDRAWN
+
+The original list is retained below, struck through. Every entry was computed
+from `best_val_acc` and every effect is smaller than the 0.15 pp noise floor.
+
+> ~~Baseline (run 19): 0.8940 (reference)~~
+> ~~CNN + SRM (run 21): +0.14 pp · CNN + FFT (run 20): −1.03 pp~~
+> ~~CNN + SRM + FFT (run 22): −0.06 pp · CBAM (run 26): −0.07 pp · GeM (run 25): +0.12 pp~~
+
+### Corrected: test-set comparison with significance testing
+
+Paired McNemar tests on the held-out test set (n = 23,341), against baseline
+run 19 (plain RGB ConvNeXt-Small):
+
+| Comparison | test acc | Δ vs baseline | McNemar p |
+|---|---|---|---|
+| **19 — baseline, RGB only** | 0.8972 | — | — |
+| 21 — + SRM | 0.8967 | **−0.06 pp** | 0.725 |
+| 22 — + SRM + FFT | 0.8946 | −0.26 pp | 0.081 |
+| 25 — "GeM" *(contains no GeM)* | 0.8973 | +0.00 pp | 1.000 |
+| 26 — "CBAM" *(contains no CBAM)* | 0.8958 | −0.15 pp | 0.324 |
+| 20 — + FFT | *corrupt* | — | — |
+
+**Conclusion: no forensic component produces a measurable effect.** Plain RGB
+ConvNeXt-Small is statistically indistinguishable from every variant, and SRM is
+marginally *worse* on test. The +0.14 pp SRM gain claimed above does not survive
+either a change of split or a significance test.
+
+Two caveats that keep this from being a clean result *about SRM*:
+
+- **SRM was effectively disconnected during training.** `srm.py:155` initialises
+  all three residual channels to identical weights (0.1× the red channel, tiled),
+  contributing ~1/1250 of the pre-activation variance. The residual branch would
+  need to grow ~35× in norm to matter, which does not happen at `lr=1e-4` over
+  11–30 epochs. Fix that before concluding anything about SRM.
+- **FFT normalisation is batch-dependent.** `fft.py:22` reduces min/max over the
+  whole batch, so a single image's FFT channel shifts its mean by 0.136 — 14% of
+  its range — between `batch_size=64` training and `batch_size=1` inference.
 
 ## Best model
+
+> **⚠️ 0.8940 is `best_val_acc`** — a maximum over epochs on the model-selection
+> split, not a test result. Run 19's test accuracy is **0.8972**. More importantly,
+> selecting on this metric is actively harmful here: across nine runs, validation
+> accuracy correlates at **r = −0.956** with robustness to a routine JPEG re-save.
+> Run 19 scores 0.000 on AI-generated images downscaled to 256px and re-saved at
+> q60; run 17, which scored 5 points *worse* on validation, scores 0.955.
+> See [`../LIMITATIONS.md`](../LIMITATIONS.md).
+
 - Selected best model (user request): **0.8940** from `results/19__convnext-small__light__0.4__cosine__focal__none` (convnext_small, RGB-only). Source: [results/19__convnext-small__light__0.4__cosine__focal__none/training_summary.json](results/19__convnext-small__light__0.4__cosine__focal__none/training_summary.json#L1).
 
 ## Next steps (optional)

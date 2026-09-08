@@ -12,13 +12,26 @@ is shared between classes:
 
 | Class | Sources |
 |---|---|
-| `real` | COCO, COCO_Test, FFHQ, ImageNet, OpenImages, Places365 |
-| `ai_generated` | FLUX, FLUX_TopUp, Midjourney_DALLE, Midjourney_TopUp, SD_TopUp, SD_TopUp2, StableDiffusion, StableDiffusion_TopUp, StyleGAN, Synthbuster |
-| `ai_edited` | CASIA, DEFACTO, DEFACTO_Inpainting, FaceForensics, ForgeryNet, IMD2020, OpenForensics |
+| `real` | COCO, COCO_Test, FFHQ, OpenImages, Places365 |
+| `ai_generated` | FLUX, FLUX_TopUp, Midjourney_DALLE, Midjourney_TopUp, SD_TopUp, SD_TopUp2, StableDiffusion, StyleGAN, Synthbuster |
+| `ai_edited` | CASIA, DEFACTO, DEFACTO_Inpainting, FaceForensics, IMD2020, OpenForensics |
 
-`create_dataloaders` splits with `train_test_split(range(len(dataset)),
-random_state=42)` — a random split over the pooled files. Train and validation
-therefore contain the same corpora.
+*Corrected 2026-09-08: earlier versions of this table listed **ImageNet** and
+**ForgeryNet**. Config files exist for both, but no artifacts were ever built and
+neither contributed a single image to the 77,865. ImageNet was additionally 4×
+Lanczos-upscaled to lossless PNG before removal — see the audit.*
+
+*Mechanism corrected 2026-09-08.* This paragraph previously blamed
+`create_dataloaders` in `scripts/dataloader/dataset_loader.py`. That file is dead
+code — it has never run (`torch` is not imported, so line 76 raises `NameError`),
+as item 2 below says. Training goes through `get_data_loaders` in `train_full.py`,
+which reads the pre-built `dataset_builder/val` directory.
+
+**The conclusion stands regardless**, because the confound is a property of the
+dataset, not the splitter: the builder's greedy assignment explicitly *balances*
+source distribution across splits (`splitter.py:96-99`), so every corpus appears
+in train, val and test by design. No split method can separate corpus identity
+from the label when each corpus maps to exactly one class.
 
 Corpus identity is a perfect predictor of the label, and it is a far easier
 signal to learn than manipulation traces: quantisation tables, resampling
@@ -70,14 +83,23 @@ mismatch. It is dead code; remove it.
 
 ---
 
-## 3. Reconcile the reported accuracy
+## 3. ~~Reconcile the reported accuracy~~ — RESOLVED 2026-09-08
 
-`README.md` headlines 82.73%, traced to `model_cards/sweep_w200_100_200.md`.
-`results/ablation_study.md` names run 19 (`convnext_small`) as the selected best
-at 89.40% validation accuracy. Both may be correct while measuring different
-things — single-stage validation versus the end-to-end three-way cascade — but
-the repository does not say which is which. State what each number measures, and
-publish the cascade's end-to-end result now that the evaluation is committed.
+The premise was wrong. There was no discrepancy to reconcile; the two numbers
+were never measuring the same thing and neither traces to the other:
+
+- **README's 82.73%** is run 01's genuine **test** accuracy. All nine cells of its
+  per-class table reproduce from `results/01/y_pred.npy` to 4 d.p.
+- **`sweep_w200_100_200.md`'s 82.73%** is that run's **`best_val_acc`**. Its test
+  accuracy is 82.86%, correctly reported in the card. The coincidence is numerical.
+- **89.40%** is run 19's `best_val_acc`; its test accuracy is 89.72%.
+- The "single-stage vs end-to-end cascade" speculation was wrong on both sides.
+  **No cascade result exists anywhere in the repository**, and one cannot currently
+  be produced — `evaluate.py:461` raises `TypeError` on every SRM checkpoint.
+
+What *is* still true and more serious: `best_val_acc` is a max over epochs on the
+selection split and is used as a headline throughout. Every such number should be
+relabelled or replaced with a test figure.
 
 ---
 

@@ -41,7 +41,11 @@
 |---|---|---|---|
 | 1 | 69.33% | 78.11% | 0.782 |
 | 10 (best) | — | **82.94%** | **0.830** |
-| 15 (last) | 95.31% | 82.67% | 0.828 |
+| 15 (last) | 95.31% | **81.81%** | **0.818** |
+
+> *Corrected 2026-09-08: this row previously read 82.67% / 0.828. `results/03/metrics.csv`
+> records epoch 15 at val_acc 0.8181, val_f1_macro 0.8180. The run's best val accuracy
+> (0.8294) was at **epoch 10**, not epoch 15.*
 
 **Train/val gap at last epoch: 13.5 pts** — overfitting persists  
 **Note:** Cosine restart fired at epoch 11 (T_0=10 too short), causing a dip to 79.3% val acc before recovering

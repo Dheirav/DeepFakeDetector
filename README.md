@@ -1,6 +1,145 @@
-# Multi-Level Deepfake Detection Project
+# Multi-Level Deepfake Detection
 
-A robust, research-grade pipeline for multi-class deepfake detection using deep learning. This project provides end-to-end tools for dataset construction, model training, evaluation, and explainability.
+A three-class image classifier — **Real / AI-Generated / AI-Edited** — built end to
+end: a 20-source dataset builder, a training harness, evaluation, Grad-CAM
+explainability, and a Streamlit UI.
+
+It reaches ~89% on its own held-out test set. **That number is not a
+generalisation estimate**, and most of this README is about how I established
+that and what it actually measures.
+
+I started this because generative models have made it genuinely hard to know
+whether you can believe something you're looking at, and because a friend of mine
+ran into real trouble from generative AI being used maliciously. I wanted
+something that could tell the difference.
+
+---
+
+## ⚠️ Status
+
+**The trained models in this repository do not detect AI-generated content. They
+recognise which source dataset an image came from.** The project is being rebuilt
+on a corrected corpus; the measurements that establish the problem are below and
+are the current substance of the work.
+
+- Full limitations, with evidence: **[`LIMITATIONS.md`](LIMITATIONS.md)**
+- Audit trail: [`docs/REVIEW_2026-09-08.md`](docs/REVIEW_2026-09-08.md) ·
+  [`docs/DATASET_BUILDER_AUDIT.md`](docs/DATASET_BUILDER_AUDIT.md)
+- Where it goes next: [`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md)
+
+---
+
+## What this project found
+
+All twenty source corpora map to exactly one class each — every "real" image comes
+from a photo dataset, every "AI-generated" one from a generator dump, every
+"edited" one from a forgery benchmark. Source→class purity is **100.0%**. That
+makes corpus identity a perfect stand-in for the label, and it is far easier to
+learn than a manipulation trace.
+
+I did not set out to find this. I had finished training and was writing the
+documentation, and I wanted to try the model on some of my own photographs before
+calling it done. It got them wrong — confidently. Everything below is what I did
+to work out why.
+
+### 1. The file header beats the network
+
+A lookup table on `(format, width, height)`, fit on train and scored on test,
+**reading no pixels at all**:
+
+| Feature | 3-class test accuracy |
+|---|---|
+| majority-class baseline | 33.40% |
+| container format alone | 59.11% |
+| resolution alone | 79.88% |
+| **format + resolution** | **87.40%** |
+| the trained model | ~89% |
+
+All 13,905 TIFF files in the dataset are `ai_edited` — 100% precision, 53.8% of
+that class, 17.9% of the dataset classified perfectly without decoding an image.
+
+### 2. A routine JPEG re-save inverts the prediction
+
+`P(correct)` over resolution × JPEG quality, on 200 images that are **all
+AI-generated**. Content never changes; only the encoding does.
+
+```
+  size    no-jpeg     q95     q85     q75     q60
+  1024      0.990   0.990   0.985   0.960   0.925
+   768      0.995   0.985   0.965   0.950   0.880
+   512      0.995   0.990   0.980   0.945   0.675
+   384      0.995   0.985   0.935   0.650   0.395
+   320      0.995   0.970   0.680   0.380   0.160
+   256      0.990   0.675   0.080   0.005   0.000
+```
+
+Downscale to 256px and save at q80 — what happens to any image crossing the web —
+and **280 of 300 AI-generated images are classified "real" at 87% confidence.**
+Accuracy goes 0.993 → 0.027. Resolution alone is harmless (the no-JPEG column);
+it is compression artefact scale relative to image size that carries the signal,
+because that is the encoding signature separating the `real` corpora from the
+generated ones.
+
+### 3. Validation accuracy is inversely correlated with robustness
+
+Across nine runs, Pearson **r = −0.956** between `best_val_acc` and accuracy under
+degradation:
+
+| run | augmentation | val acc | accuracy at 256px / q60 |
+|---|---|---|---|
+| 19 *(the one that shipped)* | light | 0.894 | **0.000** |
+| 10 | standard | 0.866 | 0.650 |
+| 17 *(rejected)* | strong | 0.843 | **0.955** |
+
+Strong augmentation destroys the corpus fingerprint, so the validation set — which
+shares that fingerprint — penalises it. **A robust model was already trained and
+was discarded for scoring five points lower on a metric measuring the wrong
+thing.**
+
+### 4. The test set is contaminated
+
+Deduplication and cluster-splitting run once per source, so nothing is ever
+compared across corpora:
+
+| measure | count | % of test |
+|---|---|---|
+| test images byte-identical to a train image | 1,012 | **4.34%** |
+| test images pHash-identical to a train image | 1,656 | **7.09%** |
+
+Separately, **743 COCO photos appear both as a `real` example and as the base
+image of a DEFACTO `ai_edited` example** — DEFACTO filenames embed the COCO ID —
+with 616 of those pairs crossing a split boundary.
+
+### 5. No forensic component has a measurable effect
+
+Paired McNemar on the test set (n = 23,341) against plain RGB ConvNeXt-Small:
+**+SRM p = 0.725**, +SRM+FFT p = 0.081, "GeM" p = 1.000, "CBAM" p = 0.324. The
+measured noise floor, from two runs with identical configs, is **0.15 pp** — larger
+than every claimed effect. Two of those four checkpoints also turned out not to
+contain the component their folder name claims.
+
+### 6. The `ai_edited` score is too high to be genuine
+
+The model reports 0.86 F1 on `ai_edited`. DEFACTO images average **1.7% tampered
+pixels**, and published methods score **0.8–6.9%** on tampered-image detection at
+224px while reaching 83–94% on fully-synthetic images. A healthy number here, at
+this resolution, is itself evidence of a shortcut.
+
+### What I take from it
+
+The thing that found this was a few minutes of testing on photographs my pipeline
+had never touched, and I did it last instead of first. Everything before that —
+the ablations, the sweeps, the model cards — was measuring the same flaw more and
+more precisely.
+
+The fix is not a better network. Every corpus mapped to exactly one class, so a
+shortcut was available and no architecture was going to refuse it. It has to be
+fixed in the data: **matched pairs**, where each manipulated image's own original
+is its `real` counterpart, so both sides share a camera, a codec and a resolution
+and only the manipulation differs. About 11,400 such pairs are recoverable from
+filenames already in this dataset — DEFACTO, CASIA and IMD2020 all encode their
+source image's ID. That is what the rebuild is built around; see
+[`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md).
 
 ---
 
@@ -12,11 +151,21 @@ A robust, research-grade pipeline for multi-class deepfake detection using deep 
 
 #### 🗄️ Dataset Builder
 - Production-grade pipeline across 20 source collections (77,865 images, 0.52% max class imbalance)
-- Perceptual-hash deduplication to remove near-duplicates across sources
+- Perceptual-hash deduplication **within each source** (see the correction note below)
 - Quality filtering by resolution, blur score, and format
-- Cluster-based train/val/test splitting — prevents similar images leaking across splits
-- Fully deterministic and reproducible (fixed seeds, locked configs)
-- Audit reports with per-source statistics and compliance checks
+- Cluster-based train/val/test splitting **within each source**
+- Fixed seeds and per-source config files
+- Audit reports with per-source statistics
+
+> **Correction (2026-09-08).** Earlier versions of this list claimed dedup and
+> leakage prevention *across* sources, full determinism, and 70/15/15 splits.
+> An audit disproved all four. The pipeline runs once per source, so nothing is
+> ever compared across corpora; near-duplicate recall is ~0%; splits are
+> actually 40/30/30; and directory iteration order changes 65% of split
+> assignments at a fixed seed. **4.34% of the test set is byte-identical to a
+> training image.** See [`docs/DATASET_BUILDER_AUDIT.md`](docs/DATASET_BUILDER_AUDIT.md)
+> and [`LIMITATIONS.md`](LIMITATIONS.md). These are being fixed; the claims were
+> removed rather than left standing.
 - `DeepfakeDataset` gracefully skips missing class folders with a warning instead of crashing
 
 #### ⚡ Training — `train_full.py` & `train_baseline.py`
@@ -61,8 +210,16 @@ A robust, research-grade pipeline for multi-class deepfake detection using deep 
 deepfake-project/
 │
 ├── README.md                     # This file
-├── DATASET.md                    # Dataset design specification
-├── requirements.txt              # Python dependencies
+├── LIMITATIONS.md                # What the numbers do and do not measure — read this
+├── BACKLOG.md                    # Ordered work list
+├── requirements.txt              # Python dependencies (⚠️ unpinned)
+│
+├── docs/
+│   ├── REVIEW_2026-09-08.md          # Full code + results audit
+│   ├── DATASET_BUILDER_AUDIT.md      # Dataset pipeline audit
+│   ├── GENERALISATION_LITERATURE.md  # What the field reports for cross-domain transfer
+│   ├── SALVAGE_PLAN.md               # Phased plan to correct the project
+│   └── DATASET.md                    # Dataset design specification
 │
 ├── dataset_builder/              # Production dataset pipeline — also contains the built dataset
 │   ├── main.py                   # Pipeline orchestrator
@@ -180,6 +337,8 @@ python demo_gradcam.py \
 
 ## 📈 Baseline Results (ResNet18, 15 epochs, March 2026)
 
+*This is the earliest run, kept for the record. See [What this project found](#what-this-project-found) for what these numbers measure.*
+
 | Class | Precision | Recall | F1 |
 |---|---|---|---|
 | Real | 0.7653 | 0.7523 | 0.7588 |
@@ -190,12 +349,31 @@ python demo_gradcam.py \
 Evaluated on the held-out test set (23,341 images, balanced across classes).
 The main confusion is Real ↔ AI Edited — 69% of all errors fall on that boundary.
 
+These nine figures reproduce exactly from `results/01/y_true.npy` and `y_pred.npy`.
+Three caveats, all measured:
+
+- This is run 01, the **weakest** model in the repository. Later runs reach ~89.7%
+  test accuracy; see `results/ablation_study.md`.
+- **The number is inflated by leakage.** 4.34% of the test set is byte-identical
+  to a training image and 7.09% is a perceptual-hash duplicate, because
+  deduplication ran per-source and never across sources.
+- **It does not measure generalisation.** Every source corpus maps to exactly one
+  class, so corpus identity predicts the label perfectly. A lookup table on file
+  format and resolution alone — reading no pixels — reaches 87.4% on this task.
+  See [`LIMITATIONS.md`](LIMITATIONS.md).
+
 ---
 
 ## 📊 Dataset Builder Pipeline
 
 The `dataset_builder/` module was used to construct the dataset from 20 source collections.
-**The build is complete** — exports are in `dataset_builder/train/`, `val/`, `test/`.
+
+> **Note.** The exported image directories (`dataset_builder/train|val|test/`) are
+> **empty in this repository** — the images are gitignored and the working copies
+> were removed. What survives is the complete per-source metadata in
+> `dataset_builder/output/artifacts/*/export_index.csv`: 77,865 rows with sha256,
+> source path and split assignment for every image, so the exact dataset
+> membership is reconstructible if the sources are re-downloaded.
 
 ### Built Dataset Stats
 | Class | Count | Sources |
@@ -205,13 +383,19 @@ The `dataset_builder/` module was used to construct the dataset from 20 source c
 | AI Edited | 25,865 | DEFACTO, DEFACTO Inpainting, OpenForensics, FaceForensics++, CASIA, IMD2020 |
 | **Total** | **77,865** | 20 artifact sources, 0.52% max imbalance |
 
-### Pipeline Capabilities
-- ✅ **Automated sampling** with configurable quotas per source
-- ✅ **Deduplication** using perceptual hashing (pHash) to remove near-duplicates
-- ✅ **Quality filtering** based on resolution, blur, and metadata
-- ✅ **Cluster-based splitting** prevents similar images from leaking across train/test
-- ✅ **Deterministic and reproducible** with fixed random seeds
-- ✅ **Audit reports** with comprehensive statistics and compliance checks
+### Pipeline Capabilities — audited 2026-09-08
+
+| Claim | Status |
+|---|---|
+| Automated quotas per source | ✅ works |
+| Quality filtering by resolution / blur | ⚠️ computed, but nothing is ever rejected — the validator flags and writes the row anyway |
+| pHash deduplication | ❌ **~0% recall on real near-duplicates** (0 of 1,287 measured pairs); the 12-hex-char bucket makes it exact-match only |
+| Cluster splitting prevents leakage | ❌ **per-source only** — 4.34% of test is byte-identical to train |
+| Deterministic and reproducible | ❌ directory iteration order changes **65%** of split assignments at fixed seed |
+| 70/15/15 split ratio | ❌ actually **40/30/30** — a relative-vs-absolute error in the greedy cost function |
+| Audit reports | ⚠️ generated, but the verdict can only FAIL on four conditions; all 20 runs report PASS |
+
+Full evidence and line numbers: [`docs/DATASET_BUILDER_AUDIT.md`](docs/DATASET_BUILDER_AUDIT.md).
 
 ### Pipeline Stages
 1. **Indexing**: Scan all source directories and create a master index
@@ -556,8 +740,26 @@ kill $(lsof -ti:8501)
 - **TensorBoard:** [https://www.tensorflow.org/tensorboard](https://www.tensorflow.org/tensorboard)
 - **Grad-CAM Paper:** [https://arxiv.org/abs/1610.02391](https://arxiv.org/abs/1610.02391)
 - **COCO Dataset:** [https://cocodataset.org/](https://cocodataset.org/)
-- **ImageNet:** [https://www.image-net.org/](https://www.image-net.org/)
 - **FaceForensics++:** [https://github.com/ondyari/FaceForensics](https://github.com/ondyari/FaceForensics)
+
+### On generalisation and shortcut learning
+
+The findings above are an instance of a documented, field-wide problem. A reviewed
+bibliography with reported figures is in
+[`docs/GENERALISATION_LITERATURE.md`](docs/GENERALISATION_LITERATURE.md); the most
+directly relevant:
+
+- **GenImage** ([arXiv:2306.08571](https://arxiv.org/abs/2306.08571)) — same-generator
+  98.5–99.9% vs cross-generator ~60–70%.
+- **Deepfake-Eval-2024** ([arXiv:2503.02857](https://arxiv.org/abs/2503.02857)) —
+  detectors moving to in-the-wild data: UnivFD 0.94 → 0.56 AUC.
+- **B-Free** ([arXiv:2412.17671](https://arxiv.org/abs/2412.17671)) — Figure 2 shows the
+  same detector flipping its prediction depending on which corpus supplied the reals.
+  This project's confound, published.
+- **SAFE** ([arXiv:2408.06741](https://arxiv.org/abs/2408.06741), KDD 2025) — replace
+  down-sampling with cropping; a direct fix for the resize artefact measured above.
+- **Grommelt et al.** (ECCV 2024 Workshops) — debiasing JPEG quality and image size alone
+  moves cross-generator accuracy 71.68% → 82.74%.
 
 ---
 
@@ -575,290 +777,3 @@ This project was developed collaboratively:
 ## 📝 License
 
 See LICENSE file for details.
-
----
-
-## Table of Contents
-1. [Project Overview](#project-overview)
-2. [Directory Structure](#directory-structure)
-3. [Data Preparation](#data-preparation)
-4. [Preprocessing](#preprocessing)
-5. [Dataset Loading](#dataset-loading)
-6. [Model Training](#model-training)
-7. [Evaluation](#evaluation)
-8. [Explainability](#explainability)
-9. [Experiment Tracking & Reproducibility](#experiment-tracking--reproducibility)
-10. [Example Workflow](#example-workflow)
-11. [Best Practices](#best-practices)
-12. [Contributors & Roles](#contributors--roles)
-13. [References](#references)
-
----
-
-## Project Overview
-- **Goal:** Detect and classify images as Real, AI Generated, or AI Edited.
-- **Approach:** End-to-end pipeline with data cleaning, augmentation, PyTorch dataset, ResNet18 baseline, advanced training, evaluation, and explainability.
-- **Research-Grade:** Modular, reproducible, and supports experiment tracking.
-
----
-
-## Directory Structure
-```
-project-root/
-│
-├── data/
-│   ├── real/
-│   ├── ai_generated/
-│   └── ai_edited/
-│
-├── models/                # Saved model checkpoints
-├── results/               # Plots, logs, TensorBoard
-├── scripts/
-│   ├── data/              # Cleaning, splitting, stats
-│   ├── preprocessing/     # Augmentations, normalization
-│   ├── dataloader/        # Dataset, DataLoader
-│   ├── training/          # Baseline & advanced training
-│   ├── evaluation/        # Metrics, confusion matrix
-│   └── explainability/    # Grad-CAM, heatmaps
-│
-├── requirements.txt
-├── README.md
-├── PROJECT_DOCUMENTATION.md
-```
-
----
-
-## Data Preparation
-- **Folders:**
-  - `dataset_builder/train/`, `dataset_builder/val/`, `dataset_builder/test/`
-- **Scripts:**
-  - `scripts/data/clean_dataset.py`: Removes corrupted images.
-  - `scripts/data/split_data.py`: Splits into train/val sets.
-  - `scripts/data/dataset_stats.py`: Reports image counts per class.
-- **Best Practices:**
-  - Use diverse sources (COCO, ImageNet, GANs, FaceForensics++).
-  - Document sources and quality in a dataset report.
-
----
-
-## Preprocessing
-- **Script:** `scripts/preprocessing/preprocessing.py`
-- **Transforms:**
-  - Resize to 224x224
-  - Convert to RGB
-  - Normalize pixel values
-  - Augmentations: horizontal flip, rotation, brightness/contrast, compression
-- **Library:** Albumentations
-- **Usage:**
-  - Import `train_transform` and `val_transform` in dataset or training scripts.
-
----
-
-## Dataset Loading
-- **Scripts:**
-  - `scripts/dataloader/dataset.py`: Custom PyTorch `Dataset` with label mapping (real=0, ai_generated=1, ai_edited=2)
-  - `scripts/dataloader/dataset_loader.py`: Train/val split, DataLoader creation, stats
-- **Features:**
-  - Batch loading, shuffling, reproducible splits
-  - Dataset statistics reporting
-
----
-
-## Model Training
-- **Scripts:**
-  - `scripts/training/train_baseline.py`: Minimal, research-grade baseline (ResNet18, validation, best model saving, CLI args, reproducibility)
-  - `scripts/training/train_full.py`: Advanced (config-driven, TensorBoard, checkpoints, plots, learning rate scheduling, experiment tracking)
-- **Features:**
-  - Device selection (CPU/GPU)
-  - Hyperparameter tuning (CLI/config)
-  - Early stopping/checkpoints (in advanced script)
-  - Logging: loss, accuracy, validation metrics
-  - Reproducibility: random seed setting
-- **Outputs:**
-  - Best model: `models/best_resnet18.pth`
-  - Checkpoints: `models/resnet18_epoch{N}.pth`
-  - Plots: `results/loss_curve.png`, `results/accuracy_curve.png`
-  - TensorBoard logs: `results/tensorboard/`
-
----
-
-## Evaluation
-- **Scripts:**
-  - `scripts/evaluation/evaluate.py`: Accuracy, precision, recall, F1, confusion matrix
-  - `scripts/evaluation/evaluation_matrices.py`: Additional metrics
-  - `scripts/evaluation/plot_confusion_matrix.py`: Visualization
-- **Usage:**
-  - Run after training to assess model performance
-  - Save and analyze misclassified images for error analysis
-
----
-
-## Explainability
-- **Script:** `scripts/explainability/grad_cam.py`
-- **Function:**
-  - Generates Grad-CAM heatmaps for model interpretability
-  - Visualizes model attention on input images
-- **Usage:**
-  - Run after training to generate heatmaps for selected images
-
----
-
-## Experiment Tracking & Reproducibility
-- **TensorBoard:** Integrated in advanced training for live metrics and comparison
-- **Config Files:** YAML config for all experiment settings
-- **Random Seeds:** Set for torch, numpy, random, cudnn
-- **Best Practices:**
-  - Log all hyperparameters and environment details
-  - Use version control for code and configs
-
----
-
-## Example Workflow
-1. Clean and preprocess the dataset:
-   ```bash
-   python scripts/data/clean_dataset.py
-   python scripts/data/split_data.py
-   python scripts/data/dataset_stats.py
-   ```
-2. Train a model:
-   ```bash
-   python scripts/training/train_baseline.py --data_dir dataset_builder --epochs 5
-   # or advanced
-   python scripts/training/train_full.py --config scripts/training/train_config.yaml
-   ```
-3. Evaluate:
-   ```bash
-   python scripts/evaluation/evaluate.py --model_path models/best_resnet18.pth
-   ```
-4. Visualize explainability:
-   ```bash
-   python scripts/explainability/grad_cam.py --model_path models/best_resnet18.pth --image_path dataset_builder/test/real/example.jpg
-   ```
-5. Monitor with TensorBoard:
-   ```bash
-   tensorboard --logdir results/tensorboard/
-   ```
-
----
-
-## Best Practices
-- Use config files for reproducible experiments
-- Track all runs with TensorBoard or MLflow
-- Save and document all model checkpoints and results
-- Analyze misclassifications and feature embeddings
-- Keep code modular and well-documented
-
----
-
-## Hardware-Specific Training Configurations
-
-To ensure stable training and avoid system crashes or overheating, use the following recommended configurations based on your laptop/PC specs. Adjust `batch_size` and `epochs` in `scripts/training/train_config.yaml` or via CLI as needed.
-
-### 1. **Entry-Level Laptop (Integrated GPU or Low VRAM <2GB, 8GB RAM)**
-- `batch_size: 8-16`
-- `epochs: 10-15`
-- `num_workers: 1`
-- `pin_memory: False`
-- Use `train_baseline.py` for best stability.
-
-### 2. **Mid-Range Laptop (GTX 1650/3050, 4GB VRAM, 8-16GB RAM)**
-- `batch_size: 16-32`
-- `epochs: 15-20`
-- `num_workers: 2`
-- `pin_memory: True`
-- Use `train_full.py` with moderate settings.
-
-### 3. **High-End Laptop (RTX 4060/4070, 8GB+ VRAM, 16GB+ RAM)**
-- `batch_size: 64`
-- `epochs: 30`
-- `num_workers: 2-4`
-- `pin_memory: True`
-- Enable mixed precision for faster training (ask for help if needed).
-
-**Tip:** If you get CUDA out-of-memory errors, reduce `batch_size` and restart training. Monitor system temperature and usage with `nvidia-smi` and system tools.
-
----
-
-## Monitoring GPU and CPU Usage During Training
-
-To ensure your system is running efficiently and not overheating during training, monitor your hardware usage:
-
-### GPU Monitoring
-- **Command:**
-  ```bash
-  watch -n 1 nvidia-smi
-  ```
-- Shows GPU utilization, memory usage, temperature, and running processes.
-- If GPU memory is nearly full or temperature is high (>80°C), reduce batch size or pause training.
-
-### CPU & RAM Monitoring
-- **Command:**
-  ```bash
-  htop
-  ```
-- Shows CPU core usage, RAM usage, and running processes in real time.
-- Install with `sudo apt install htop` if not present.
-
-**Tip:** Always monitor your system during the first few epochs of a new experiment, especially with new batch sizes or model changes.
-
----
-
-## Contributors & Roles
-- Data Collection: Person 1
-- Data Cleaning/Preprocessing: Person 2
-- Dataset Loader: Person 3
-- Model Training: Person 4
-- Evaluation/Explainability: Person 5
-
----
-
-## References
-- [Albumentations](https://albumentations.ai/)
-- [PyTorch](https://pytorch.org/)
-- [TensorBoard](https://www.tensorflow.org/tensorboard)
-- [Grad-CAM Paper](https://arxiv.org/abs/1610.02391)
-- [COCO Dataset](https://cocodataset.org/)
-- [ImageNet](https://www.image-net.org/)
-- [FaceForensics++](https://github.com/ondyari/FaceForensics)
-
----
-
-# Deepfake Detection Project
-
-This repository provides tools, scripts, and pipelines for building, training, and evaluating deepfake detection models.
-
-## Project Structure
-- `dataset_builder/`: Production-grade, deterministic dataset builder pipeline ([see detailed docs](dataset_builder/README.md))
-- `models/`: Model architectures and training scripts
-- `scripts/`: Data processing, evaluation, and utility scripts
-- `data/`: Raw and processed data directories
-- `results/`: Experiment outputs and results
-
-## Dataset Builder Pipeline
-The `dataset_builder` module provides a robust, auditable, and fully automated pipeline for constructing machine learning datasets for deepfake detection. It supports:
-- Modular, deterministic, and config-driven stages
-- Strong error handling and compliance validation
-- Dry-run and strict mode for safe experimentation
-- Structured logging and reporting
-
-See [dataset_builder/README.md](dataset_builder/README.md) for full usage, configuration, and artifact details.
-
-## Quick Start
-1. Prepare your dataset and config YAML (see `dataset_builder/README.md`).
-2. Run the dataset builder:
-   ```bash
-   cd dataset_builder
-   python main.py --config path/to/config.yaml
-   ```
-3. Train and evaluate models using scripts in `models/` and `scripts/`.
-
-## Requirements
-- Python 3.8+
-- See `requirements.txt` for dependencies
-
-## Documentation
-- [Dataset Builder Pipeline](dataset_builder/README.md)
-- Project Documentation
-
-## License
-See LICENSE file.

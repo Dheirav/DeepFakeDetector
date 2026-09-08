@@ -70,12 +70,28 @@ model.features[0][0] = adapt_conv1_for_srm(model.features[0][0])
 
 **Overall test accuracy: 86.85%** — +3.54 pts over best ResNet-18
 
+> **Corrected 2026-09-08.** The **F1 column and the 86.85% accuracy reproduce
+> exactly** from `results/06/y_*.npy`. The precision and recall cells did not —
+> they are replaced below with the computed values. The Δ column referenced a
+> baseline confusion matrix belonging to a different run and has been removed.
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| Real | 0.8255 | 0.7962 | 0.8106 |
+| AI Generated | 0.9517 | 0.9652 | 0.9584 |
+| AI Edited | 0.8263 | 0.8440 | 0.8350 |
+| **Macro avg** | **0.8678** | **0.8684** | **0.8680** |
+
+<details><summary>Original (incorrect) precision/recall values</summary>
+
 | Class | Precision | Recall | F1 | Δ vs best ResNet-18 |
 |---|---|---|---|---|
 | Real | 0.816 | 0.806 | 0.811 | +0.036 |
 | AI Generated | 0.960 | 0.957 | 0.958 | +0.034 |
 | AI Edited | 0.837 | 0.833 | 0.835 | +0.033 |
 | **Macro avg** | **0.871** | **0.865** | **0.868** | **+0.034** |
+
+</details>
 
 ### Confusion Matrix
 ```
