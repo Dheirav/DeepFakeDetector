@@ -192,9 +192,12 @@ class GradCAM:
 
     def cleanup(self):
         """Remove hooks to free memory. Call this when done with the GradCAM instance."""
+        # __del__ calls this, and __del__ can fire on a partially-constructed
+        # instance (an exception in __init__, or GradCAM.__new__ in a test), so
+        # every attribute touched here has to be optional.
         for hook in getattr(self, "hooks", []):
             hook.remove()
-        self.hooks.clear()
+        self.hooks = []
         self.activations = None
         self.gradients = None
 

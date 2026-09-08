@@ -98,9 +98,24 @@ class FocalLoss(nn.Module):
             label_smoothing=self.label_smoothing,
         )
 
-        # p_t = exp(-CE) is the model's probability assigned to the correct class
-        # (for the unweighted case; approximation holds with weights/smoothing too)
-        pt = torch.exp(-ce)
+        # p_t must be the model's probability for the correct class. Deriving it
+        # as exp(-ce) is only valid when ce is plain, unweighted, unsmoothed
+        # cross-entropy -- and here it is neither:
+        #
+        #   * label_smoothing puts a floor under ce, so pt can never approach 1
+        #     and the focal term never approaches 0. With gamma=3 and ls=0.1 a
+        #     99%-confident correct prediction was down-weighted by 0.049 rather
+        #     than 1e-6 -- five orders of magnitude off, which neutralised the
+        #     focusing mechanism the class exists to provide.
+        #   * the class weight leaked into the modulator, making it
+        #     class-dependent. At p=0.99 the Real class (weight 1.5) received a
+        #     SMALLER modulator than AI-Generated (weight 1.0), inverting the
+        #     intended emphasis in the regime where most data sits.
+        #
+        # Take pt straight from the softmax instead; the weight and smoothing
+        # still act, correctly, through `ce`.
+        logp = F.log_softmax(logits, dim=1)
+        pt = logp.gather(1, targets.unsqueeze(1)).squeeze(1).exp()
 
         # Focal scaling: (1 - pt)^gamma suppresses easy examples
         focal_loss = (1.0 - pt) ** self.gamma * ce

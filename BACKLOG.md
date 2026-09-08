@@ -72,7 +72,7 @@ honest split they may beat the ConvNeXt that currently wins on the random split.
 
 ---
 
-## 2. Delete the placeholder dataloader
+## 2. ~~Delete the placeholder dataloader~~ — DONE 2026-09-08
 
 `scripts/dataloader/dataset_loader.py` defines `default_transforms` as
 `Resize + ToTensor` with **no** `Normalize`, and is commented "(Placeholder)".
@@ -103,8 +103,17 @@ relabelled or replaced with a test figure.
 
 ---
 
-## 4. No CI
+## 4. ~~No CI~~ — DONE 2026-09-08
 
-There is no `.github/workflows`. At minimum: lint, import-check every script, and
-run the evaluation scripts against a small fixture so a refactor cannot silently
-break the pipeline.
+`tests/` (33 tests, stdlib `unittest`, no dataset required, ~7s) and
+`.github/workflows/tests.yml`. The workflow also import-checks every module and
+runs `--help` on all 36 CLI scripts.
+
+Every bug found in the 2026-09-08 audit now has a regression test. The suite
+earned itself immediately: writing the FFT test surfaced a bug the audit had
+missed — `torch.fft.fftshift` was called without `dim`, so it shifted the batch
+axis too and sample *i* received sample *(i + N/2)*'s spectrum.
+
+Run it with:
+
+    venv-linux/bin/python -m unittest discover -s tests -t .
