@@ -47,6 +47,12 @@ dataset_builder/output/artifacts/pipeline.log
 # Per-source artifact subdirectories (binary indexes, per-image CSVs)
 dataset_builder/output/artifacts/*/
 
+# ...but keep the per-source export indexes. They are the only surviving record
+# of which image went into which split -- the exported image directories are
+# empty and the source data is largely deleted, so losing these makes every
+# number in results/ unreproducible. 31MB for 77,865 rows of provenance.
+!dataset_builder/output/artifacts/*/export_index.csv
+
 # ── Model checkpoints ─────────────────────────────────────────────────────────
 # Saved with torch.save — can be hundreds of MB each.
 # Download or re-train using instructions in README.md.
