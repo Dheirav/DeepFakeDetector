@@ -42,7 +42,14 @@ def run_binary_eval(model_path, data_dir, save_dir, batch_size=64, num_workers=2
             all_preds.extend(preds.tolist())
             all_labels.extend(labels.numpy().tolist())
 
-    y_true = np.array(all_labels)
+    # DeepfakeDataset uses the global label map, so filtering to
+    # ["real", "ai_edited"] still yields {0, 2} while a Stage-2 model outputs
+    # {0, 1}. Without this remap every AI-Edited sample counted as a mismatch and
+    # classification_report raised on three labels against two names -- i.e. every
+    # Stage-2 accuracy this script has ever produced was invalid.
+    # train_stage2_refiner.py:48-56 applies the same mapping at training time.
+    _BINARY_REMAP = {0: 0, 2: 1}
+    y_true = np.array([_BINARY_REMAP[int(l)] for l in all_labels])
     y_pred = np.array(all_preds)
 
     os.makedirs(save_dir, exist_ok=True)

@@ -169,10 +169,14 @@ def get_data_loaders(train_dir, batch_size, val_dir=None, val_split=0.2, seed=42
         num_workers=num_workers, pin_memory=True,
         persistent_workers=True, prefetch_factor=2,
     )
+    # persistent_workers on BOTH loaders keeps 2*num_workers processes alive for
+    # the whole run -- the validation pair sit idle through every training epoch
+    # holding a fork of the parent. On an 8GB WSL cap that is a real cost, so the
+    # val loader spawns per-use instead.
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True,
-        persistent_workers=True, prefetch_factor=2,
+        persistent_workers=False, prefetch_factor=2,
     )
     print(f"Train batches: {len(train_loader)} | Val batches: {len(val_loader)}")
     return train_loader, val_loader
@@ -221,7 +225,8 @@ def train(
     gem_learnable=False,
     cbam_reduction=16,
     cbam_kernel=7,
-
+    dry_run=False,
+    max_steps=None,
 ):
     # Load config if provided (single read)
     if config_path:
@@ -242,6 +247,7 @@ def train(
         augment        = config.get('augment', augment)
         run_name       = config.get('run_name', run_name)
         use_srm        = config.get('use_srm', use_srm)
+        use_fft        = config.get('use_fft', use_fft)
         loss_type      = config.get('loss_type', loss_type)
         label_smoothing = config.get('label_smoothing', label_smoothing)
         early_stop_patience = config.get('early_stop_patience', early_stop_patience)
@@ -278,7 +284,7 @@ def train(
         f"LR schedule: {lr_schedule} | Focal gamma: {focal_gamma} | "
         f"Augment: {augment} | Attention head: {attention_head}"
     )
-    if not getattr(args, "dry_run", False):
+    if not dry_run:
         os.makedirs(checkpoint_dir, exist_ok=True)
         os.makedirs(plot_dir, exist_ok=True)
 
@@ -291,7 +297,7 @@ def train(
         gpu_handle = nvmlDeviceGetHandleByIndex(0)
     
     writer = None
-    if not getattr(args, "dry_run", False): 
+    if not dry_run: 
         writer = SummaryWriter(log_dir=os.path.join(plot_dir, "tensorboard"))
 
     train_loader, val_loader = get_data_loaders(
@@ -407,6 +413,22 @@ def train(
     else:
         scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
 
+    # Everything a loader needs to rebuild this exact architecture. Written into
+    # the checkpoint itself so evaluation and inference never guess -- guessing
+    # is what produced results/18 and results/20.
+    model_config = {
+        "backbone": backbone, "num_classes": 3, "dropout_p": dropout_p,
+        "use_srm": use_srm, "use_fft": use_fft, "attention_head": attention_head,
+        "gem_p": gem_p, "gem_learnable": bool(gem_learnable),
+        "cbam_reduction": cbam_reduction, "cbam_kernel": cbam_kernel,
+    }
+
+    def _save(path):
+        # torch.compile wraps the module; save the original so compiled and
+        # eager checkpoints are interchangeable.
+        inner = getattr(model, "_orig_mod", model)
+        torch.save({"state_dict": inner.state_dict(), "config": model_config}, path)
+
     best_val_acc = 0.0
     best_model_path = os.path.join(checkpoint_dir, "best_model.pth")
     train_losses, val_losses = [], []
@@ -416,7 +438,7 @@ def train(
     metrics_csv_path = os.path.join(plot_dir, "metrics.csv")
     metrics_csv_file = None
     metrics_writer = None
-    if not getattr(args, "dry_run", False):
+    if not dry_run:
         os.makedirs(plot_dir, exist_ok=True)
         metrics_csv_file = open(metrics_csv_path, 'w', newline='')
         metrics_writer = csv.writer(metrics_csv_file)
@@ -425,7 +447,7 @@ def train(
 
     scaler = torch.amp.GradScaler('cuda', enabled=(device == "cuda"))
     # If dry run, force epochs to 3
-    if getattr(args, "dry_run", False):
+    if dry_run:
         epochs = 1
     for epoch in range(epochs):
         model.train()
@@ -471,13 +493,13 @@ def train(
                     _, preds = torch.max(outputs, 1)
                     correct += (preds == labels).sum().item()
                     total += labels.size(0)
-                    if args.dry_run:
+                    if dry_run:
                         print('Dry run: exiting after first batch.')
                         if metrics_csv_file is not None:
                             metrics_csv_file.close()
                         return
-                    if args.max_steps is not None and loop.n >= args.max_steps:
-                        print(f'Max steps ({args.max_steps}) reached, exiting epoch early.')
+                    if max_steps is not None and loop.n >= max_steps:
+                        print(f'Max steps ({max_steps}) reached, exiting epoch early.')
                         break
                     prof.step()
             print("\n[PyTorch Profiler] First epoch summary:")
@@ -496,6 +518,17 @@ def train(
                 _, preds = torch.max(outputs, 1)
                 correct += (preds == labels).sum().item()
                 total += labels.size(0)
+                # These were previously implemented only inside the profiler
+                # branch, so --dry-run ran a whole epoch and --max-steps did
+                # nothing at all on the normal path.
+                if dry_run:
+                    print('Dry run: exiting after first batch.')
+                    if metrics_csv_file is not None:
+                        metrics_csv_file.close()
+                    return
+                if max_steps is not None and loop.n >= max_steps:
+                    print(f'Max steps ({max_steps}) reached, exiting epoch early.')
+                    break
         train_loss = running_loss / total
         train_acc = correct / total
         train_losses.append(train_loss)
@@ -557,9 +590,9 @@ def train(
             ])
             metrics_csv_file.flush()
 
-        if not getattr(args, "dry_run", False):
+        if not dry_run:
             checkpoint_path = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch+1}.pth")
-            torch.save(model.state_dict(), checkpoint_path)
+            _save(checkpoint_path)
 
             # remove previous checkpoint to save disk
             prev_ckpt = os.path.join(checkpoint_dir, f"{backbone}_epoch{epoch}.pth")
@@ -570,8 +603,8 @@ def train(
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             epochs_no_improve = 0
-            if not getattr(args, "dry_run", False):
-                torch.save(model.state_dict(), best_model_path)
+            if not dry_run:
+                _save(best_model_path)
                 print(f"  ✔ Best model saved (epoch {epoch+1}, val acc {val_acc:.4f}, val F1 {val_f1_macro:.4f})")
             else:
                 print(f"  (dry-run) Best model NOT saved (would be: {best_model_path})")
@@ -588,7 +621,7 @@ def train(
     else:
         print("Per-epoch metrics not saved (dry run).")
 
-    if not getattr(args, "dry_run", False):
+    if not dry_run:
         # Plot loss and accuracy curves
         actual_epochs = len(train_losses)
         plt.figure()
@@ -636,7 +669,7 @@ def train(
         }
     }
     summary_path = os.path.join(plot_dir, "training_summary.json")
-    if not getattr(args, "dry_run", False):
+    if not dry_run:
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2)
     print(f"Training summary saved to: {summary_path}")
@@ -740,4 +773,6 @@ if __name__ == "__main__":
         gem_learnable=args.gem_learnable,
         cbam_reduction=args.cbam_reduction,
         cbam_kernel=args.cbam_kernel,
+        dry_run=args.dry_run,
+        max_steps=args.max_steps,
     )

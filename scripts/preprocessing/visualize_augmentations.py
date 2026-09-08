@@ -2,6 +2,10 @@ import argparse
 import cv2
 import matplotlib.pyplot as plt
 import os
+# Put scripts/ ahead of this script's own directory so `preprocessing` resolves
+# to the package rather than to the sibling preprocessing.py module.
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 from preprocessing import preprocessing
 
 import albumentations as A

@@ -110,7 +110,8 @@ class SRMLayer(nn.Module):
         return torch.cat([x, residuals], dim=1)   # [B, 6, H, W]
 
 
-def adapt_conv1_for_srm(conv1: nn.Conv2d, in_channels: int = 6) -> nn.Conv2d:
+def adapt_conv1_for_srm(conv1: nn.Conv2d, in_channels: int = 6,
+                        residual_var_fraction: float = 0.1) -> nn.Conv2d:
     """
     Replace a 3-channel Conv2d (ResNet's conv1) with a 6-channel version, preserving
     the pretrained weights for the original RGB channels.
@@ -153,11 +154,39 @@ def adapt_conv1_for_srm(conv1: nn.Conv2d, in_channels: int = 6) -> nn.Conv2d:
         # Assign pretrained RGB weights for the first three input channels
         new_conv.weight[:, :3, ...] = rgb_weights
 
-        # Initialise any extra channels (residual / FFT) to a small multiple
-        # of the pretrained RGB weights so they start as a small correction.
+        # Initialise the extra residual / FFT channels.
+        #
+        # This previously did `rgb_weights[:, :1].repeat(1, extra, 1, 1) * 0.1`,
+        # which had two consequences that between them switched the SRM branch
+        # off before training started:
+        #
+        #   1. All three residual channels received *bit-identical* weights (a
+        #      tiled copy of the red channel), so at initialisation the layer
+        #      computed 0.1 * W_R * (r_laplacian + r_horizontal + r_vertical).
+        #      The three differently-oriented kernels this module exists to
+        #      provide were collapsed into their sum.
+        #   2. The branch contributed ~1/1250 of the pre-activation variance.
+        #      Measured on resnet18.conv1: RGB channel norms [7.21, 8.64, 5.63]
+        #      against residual norms [0.72, 0.72, 0.72], and the residual
+        #      activations are themselves ~0.28x the scale of the normalised RGB
+        #      ones. Reaching parity would need the residual weights to grow
+        #      ~35x in norm, which does not happen at lr=1e-4 over the 11-30
+        #      epochs these runs lasted.
+        #
+        # Each extra channel now gets its own Kaiming-normal draw, scaled so the
+        # residual branch starts at `residual_var_fraction` of the RGB branch's
+        # contribution to the pre-activation variance. The 0.28 is the measured
+        # ratio of clamped-residual std to normalised-RGB std on real images.
         if in_channels > 3:
             extra = in_channels - 3
-            fill = rgb_weights[:, :1, ...].repeat(1, extra, 1, 1) * 0.1
+            fan_in = conv1.kernel_size[0] * conv1.kernel_size[1]
+            rgb_rms = rgb_weights.pow(2).mean().sqrt()
+            residual_activation_ratio = 0.28
+            target_rms = rgb_rms * (residual_var_fraction ** 0.5) / residual_activation_ratio
+            fill = torch.randn(
+                out_ch, extra, kH, kW, generator=None, dtype=new_conv.weight.dtype
+            )
+            fill = fill / fill.pow(2).mean().sqrt() * target_rms
             new_conv.weight[:, 3:, ...] = fill
 
         if conv1.bias is not None:
