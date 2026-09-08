@@ -136,24 +136,119 @@ dedup and leakage checks finally see across corpora.
 
 ---
 
-## Phase 3 — rebuild the data (1-2 weeks, mostly waiting on downloads)
+## Phase 3 — rebuild the data
 
-1. **Re-download** the deleted sources. 13 of 20 have a URL or script in-repo;
-   DEFACTO, CASIA, IMD2020, FFHQ, COCO and OpenImages need URLs sourced manually.
-2. **Download the masks this time.** DEFACTO, CASIA, IMD2020 and FF++ all ship
-   pixel-level ground truth. Your FF++ downloader already supports it
-   (`TYPE = ['videos','masks','models']`) — you took videos only.
-3. **Build matched pairs.** DEFACTO and DEFACTO_Inpainting filenames carry the
-   COCO image ID; CASIA carries its own authentic IDs; IMD2020 has one
-   manipulation per original. Use each manipulation's *own* original as its
-   `real` counterpart. Same camera, codec, resolution — the only difference is
-   the edit. **This is the change that kills the confound at the root**, because
-   both halves of every pair have identical packaging.
-4. **Normalise encoding** across everything that cannot be paired.
+### What survived, and why it matters
 
-**Deliverable:** a dataset where the shortcut cannot exist by construction.
+The download-sample-delete pattern used for the first build looked lossy but was
+not. `deduped_index.csv` records pHash **and** sha256 for every image the indexer
+saw, not merely the sampled subset:
 
----
+    full-source fingerprints surviving:  359,253 rows across 20 sources   (94 MB)
+    images actually kept:                 77,865
+    ratio:                                     4.6x
+
+COCO's index alone holds 163,891 rows against 6,000 exported. That is why the
+cross-source scan below could be run with none of the source data on disk.
+
+### What the cross-source scan found (2026-09-08, full pool)
+
+Never run during the original build, because the pipeline executes once per
+source and `merge_exports.py` emitted an empty index.
+
+    exact (sha256) cross-source duplicates:              44,347
+    near-duplicate pairs (pHash Hamming <= 3):           74,840
+    of those, CROSS-CLASS -- one picture, two labels:    23,588
+
+        coco [real]  <->  defacto [ai_edited]              12,482
+        coco [real]  <->  defacto_inpainting [ai_edited]   11,076
+        openforensics [ai_edited] <-> openimages [real]        24
+        ffhq [real]  <->  stylegan [ai_generated]               2
+
+**COCO_Test contributed zero novel images.** Its filenames and sha256 hashes are
+100.0% contained in `coco` -- 40,657 of 40,661. `download_coco_test.py` names
+`test2017.zip`, but what was indexed is train2017 content. Dataset impact: 1,489
+of the 7,000 exported COCO_Test images are byte-identical to an exported COCO
+image, and **987 of those straddle a split boundary**. Verify what that script
+actually fetches before running it again, or drop the source entirely.
+
+### The rebuild procedure
+
+Ordering matters -- several steps exist specifically to avoid downloading a
+corpus twice.
+
+**Step 0 — before downloading anything.**
+Decide what you need per corpus. `dataset_builder/pair_index.csv` already names
+the 13,110 distinct originals required for matched pairs. Only **941** of them are
+in the current build, so random sampling will not produce them; the sampler has to
+be driven from that list.
+
+**Step 1 — per corpus, in this order: manipulations before originals.**
+CASIA, DEFACTO, DEFACTO_Inpainting and IMD2020 first, because their filenames
+determine which originals you need. Then COCO (for DEFACTO's originals), then the
+remaining `real` and `ai_generated` corpora.
+
+For each corpus:
+
+1. Download it.
+2. **Index the whole thing.** Run the pipeline through the dedup stage so
+   `deduped_index.csv` carries pHash and sha256 for every image, not just what you
+   sample. This is the artifact that makes everything afterwards possible, and it
+   costs ~5 MB per 20,000 images.
+3. **Export with `normalise_on_export: true`.** Every image becomes a 512x512
+   JPEG at ~70 KB, EXIF stripped. 78k images is roughly **5.5 GB** and the export
+   is self-sufficient -- you never need the original file again. This is the change
+   that removes the metadata shortcut: format alone currently identifies 17.9% of
+   the dataset perfectly, and format plus resolution reaches 87.4% three-class
+   accuracy with no pixel access.
+4. For a corpus that supplies originals (COCO especially), export **both** the
+   class sample **and** every image `pair_index.csv` names. One pass. Getting this
+   wrong means downloading COCO twice.
+5. Delete the raw source.
+
+**Step 2 — pool the metadata and dedup globally.** This is the step that never
+happened. Concatenate every `deduped_index.csv`, cluster with
+`modules/clustering.py`, and resolve every cross-source and cross-class pair
+*before* sampling. Cheap: 94 MB of CSV, minutes to run.
+
+**Step 3 — build matched pairs.** Pair each manipulation with its own original.
+Both halves then share a camera, a codec, a resolution and a compression history,
+so the only difference left is the manipulation. This is the construction that
+kills the confound at its root rather than papering over it.
+
+**Step 4 — split with `holdout_sources`.** Leave-one-source-out. Report the
+spread across held-out sources, not just the mean.
+
+**Step 5 — audit.** Confirm before training: no cross-class near-duplicate spans
+a split; `class x source` is no longer pure; a metadata-only probe on the rebuilt
+export scores at chance.
+
+### Disk budget
+
+| Item | Size |
+|---|---|
+| surviving fingerprint metadata | 94 MB (already have) |
+| normalised export, ~78k images | ~5.5 GB |
+| peak transient, one corpus at a time | largest single corpus (COCO train2017 ~18 GB) |
+
+Only one raw corpus is on disk at a time, so peak usage is bounded by the largest
+download rather than the sum.
+
+### Not recoverable without re-extraction
+
+FaceForensics and OpenForensics cannot be paired from the current export. The
+frame extractor named files by a global counter (`ff_0000004.jpg`), discarding
+video, identity and frame index; the OpenForensics downloader flattened its
+archive without the per-face annotations. Both need re-extraction with
+provenance-preserving names. `extract_ff_frames.py` already supports
+`--all-sequences` for the pristine originals -- the first build used manipulated
+sequences only.
+
+**And download the masks this time.** DEFACTO, CASIA, IMD2020 and FF++ all ship
+pixel-level ground truth; `download_faceforensics.py` already supports
+`TYPE = ['videos', 'masks', 'models']` and the first build took videos only.
+Without masks the `ai_edited` class stays unlearnable at 224px -- see finding 6 in
+the README.
 
 ## Phase 4 — retrain honestly (3-5 days)
 

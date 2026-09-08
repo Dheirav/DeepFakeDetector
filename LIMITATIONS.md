@@ -92,8 +92,40 @@ a single class.
 
 Additionally, **743 COCO images appear both as a `real` example and as the base
 image of a DEFACTO `ai_edited` example** (DEFACTO filenames embed the COCO image
-ID). 616 of those pairs cross a split boundary. Confirmed independently by pHash:
-880 of 903 cross-class near-duplicate pairs are COCO↔DEFACTO.
+ID). 616 of those pairs cross a split boundary.
+
+### 2.1 The full-pool scan (2026-09-08)
+
+The figures above are measured on the 77,865 exported images. The surviving
+per-source indexes carry pHash and sha256 for **359,253** images — every file the
+indexer saw, not just what was sampled — so the cross-source comparison the
+pipeline never performed can be run retrospectively. Over the full pool:
+
+| | count |
+|---|---|
+| exact (sha256) cross-source duplicate images | 44,347 |
+| near-duplicate pairs, pHash Hamming ≤ 3 | 74,840 |
+| **of those, cross-class — one picture, two labels** | **23,588** |
+
+| pair | count |
+|---|---|
+| `coco` [real] ↔ `defacto` [ai_edited] | 12,482 |
+| `coco` [real] ↔ `defacto_inpainting` [ai_edited] | 11,076 |
+| `openforensics` [ai_edited] ↔ `openimages` [real] | 24 |
+| `ffhq` [real] ↔ `stylegan` [ai_generated] | 2 |
+
+The FFHQ↔StyleGAN pair is expected — that GAN was trained on FFHQ. The COCO↔DEFACTO
+pairs are the serious ones: they are the same photograph labelled `real` in one
+corpus and `ai_edited` in another, on the exact class boundary carrying 69% of the
+model's errors.
+
+### 2.2 One source contributed no new images at all
+
+`COCO_Test` is a duplicate of `COCO`. Its filenames and hashes are **100.0%**
+contained in the COCO index (40,657 of 40,661). `download_coco_test.py` names
+`test2017.zip`, but the indexed content is train2017. Dataset impact: **1,489 of
+the 7,000 exported COCO_Test images are byte-identical to an exported COCO image,
+and 987 of those straddle a split boundary.**
 
 ## 3. Model selection optimised for the shortcut
 
