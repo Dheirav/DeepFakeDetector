@@ -34,7 +34,14 @@ def write_csv_rows(path: Path, rows, fieldnames):
 
 
 def merge_exports(artifacts_dirs, out_dir: Path, export_root: Path, hardlink=False):
-    seen = set()
+    # Two independent dedup sets. A single shared `seen` was used for both
+    # passes: the sampled pass ran first and inserted every (md5, sha256), so
+    # the identical export rows were then all skipped as duplicates and the
+    # master export index came out EMPTY -- 6,000 sampled rows, 0 export rows,
+    # 0 files copied. This is why cross-source deduplication never happened and
+    # why 4,229 byte-identical pairs survived into the splits.
+    seen_sampled = set()
+    seen_export = set()
     master_export_rows = []
     master_sampled_rows = []
     export_fieldnames = None
@@ -51,9 +58,9 @@ def merge_exports(artifacts_dirs, out_dir: Path, export_root: Path, hardlink=Fal
                 sampled_fieldnames = list(srows[0].keys())
             for r in srows:
                 key = (r.get('md5_hash',''), r.get('sha256',''))
-                if key in seen:
+                if key in seen_sampled:
                     continue
-                seen.add(key)
+                seen_sampled.add(key)
                 master_sampled_rows.append(r)
         # Merge export rows and copy files
         erows = read_csv_rows(export_csv)
@@ -62,9 +69,9 @@ def merge_exports(artifacts_dirs, out_dir: Path, export_root: Path, hardlink=Fal
                 export_fieldnames = list(erows[0].keys())
             for r in erows:
                 key = (r.get('md5_hash',''), r.get('sha256',''))
-                if key in seen:
+                if key in seen_export:
                     continue
-                seen.add(key)
+                seen_export.add(key)
                 master_export_rows.append(r)
                 src = Path(r.get('export_path',''))
                 if not src.exists():
@@ -73,7 +80,12 @@ def merge_exports(artifacts_dirs, out_dir: Path, export_root: Path, hardlink=Fal
                     if candidate.exists():
                         src = candidate
                 if src.exists():
-                    dest_root = export_root
+                    # Preserve <split>/<class>/ instead of flattening everything
+                    # into one directory, which discarded the split and label
+                    # structure and let same-named files from different sources
+                    # silently clobber each other.
+                    split, cls = r.get('split', ''), r.get('class_label', '')
+                    dest_root = export_root / split / cls if split and cls else export_root
                     dest_root.mkdir(parents=True, exist_ok=True)
                     dest = dest_root / src.name
                     try:

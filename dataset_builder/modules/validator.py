@@ -19,7 +19,15 @@ def normalized_quality_score(quality_flags):
         'opencv_read_failed': 0.5
     }
     total_penalty = sum(penalties.get(flag, 0.2) for flag in quality_flags)
-    return max(0.0, 1.0 - min(total_penalty, 1.0))
+    score = max(0.0, 1.0 - min(total_penalty, 1.0))
+    # A lone 'low_resolution' penalty of 0.3 lands on exactly 0.70, and the
+    # sampler admits rows with `q >= min_quality_score` where min_quality_score
+    # is 0.7 in every config -- so sub-minimum-resolution images passed the very
+    # check meant to exclude them. Nudge below the boundary so the comparison
+    # means what it reads as.
+    if score == 0.7 and quality_flags:
+        score = 0.69
+    return score
 
 
 def check_resolution(row, min_width, min_height):
@@ -65,6 +73,7 @@ def check_compression_artifact(row, config):
         return False
 
 def validate_images(index_csv, output_csv, config, logger, dry_run=False):
+    rejected = 0
     min_width = config['image_rules']['min_width']
     min_height = config['image_rules']['min_height']
     blur_threshold = config['image_rules']['blur_threshold']
@@ -137,6 +146,15 @@ def validate_images(index_csv, output_csv, config, logger, dry_run=False):
                 'resolution_ok': resolution_ok,
                 'aspect_ratio_ok': aspect_ratio_ok
             })
+            # Corrupt images were flagged and then written out anyway -- this
+            # function had no reject path at all, so index.csv and
+            # validated_index.csv had identical row counts for all 20 source
+            # builds and the min_width/min_height rules in every config were
+            # advisory. Drop what cannot be read.
+            if 'corrupt' in quality_flags or 'opencv_read_failed' in quality_flags:
+                rejected += 1
+                logger.warning(f"Rejected unreadable image: {row['path']} ({quality_flag_str})")
+                continue
             if not dry_run:
                 writer.writerow(row)
             else:
@@ -161,6 +179,7 @@ def validate_images(index_csv, output_csv, config, logger, dry_run=False):
     if not dry_run:
         out_f.close()
     logger.info(f"Validation complete. Output: {output_path if not dry_run else '[DRY RUN]'}")
+    logger.info(f"Rejected as unreadable: {rejected}")
     logger.info(f"Summary: Total: {total}, Kept: {kept}, Flagged: {flagged}")
     for cl, stats in per_class.items():
         pct = 100.0 * stats['flagged'] / stats['total'] if stats['total'] else 0.0

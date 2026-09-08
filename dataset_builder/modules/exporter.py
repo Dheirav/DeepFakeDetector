@@ -28,6 +28,47 @@ def safe_copy_file(src, dst, overwrite=False, dry_run=False):
             return None, str(e)
     return str(final_dst), None
 
+def normalise_and_write(src, dst, size, quality, overwrite=False, dry_run=False):
+    """Re-encode an image to a single common container, resolution and quality.
+
+    ``shutil.copy2`` preserves every source corpus's native encoding, which is
+    exactly the signal a detector learns instead of manipulation traces. Measured
+    on this dataset: file *format* alone identifies 17.9% of images perfectly (all
+    13,905 TIFFs are ai_edited, and nothing else is TIFF), and a lookup table on
+    format plus resolution reaches **87.4% three-class accuracy without reading a
+    single pixel** -- against a trained model's ~89%.
+
+    Re-encoding everything identically removes the format and resolution channels
+    at source. It does not remove everything: resampling history and generator
+    artefacts survive, which is the point -- those are the signals the model is
+    supposed to be using.
+
+    Returns ``(path, width, height, error)``.
+    """
+    from PIL import Image
+
+    dst = Path(dst).with_suffix(".jpg")
+    if dst.exists() and not overwrite:
+        base, parent, i = dst.stem, dst.parent, 1
+        while (parent / f"{base}_{i}.jpg").exists():
+            i += 1
+        dst = parent / f"{base}_{i}.jpg"
+    if dry_run:
+        return str(dst), None, None, None
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with Image.open(src) as im:
+            im = im.convert("RGB")          # drops alpha, palettes and 16-bit depth
+            if size:
+                im = im.resize((size, size), Image.LANCZOS)
+            # No exif= argument, so camera make/model, timestamps and software
+            # tags -- all corpus-identifying -- are dropped.
+            im.save(dst, "JPEG", quality=quality, optimize=True)
+            return str(dst), im.width, im.height, None
+    except Exception as e:
+        return None, None, None, str(e)
+
+
 def compute_sha256(file_path, chunk_size=65536):
     sha256 = hashlib.sha256()
     try:
@@ -103,6 +144,16 @@ def export_dataset(split_index_csv, export_root, config, logger, dry_run=False):
     max_images_per_split = config.get('max_images_per_split')
     random_seed = config.get('random_seed', 42)
     strict_mode = config.get('strict_mode', False)
+    # Off by default so existing builds reproduce byte-for-byte; turn it on for
+    # any rebuild that is meant to measure generalisation.
+    normalise = config.get('normalise_on_export', False)
+    normalise_size = config.get('normalise_size', config.get('image_rules', {}).get('target_resolution', 512))
+    normalise_quality = config.get('normalise_quality', 90)
+    if normalise:
+        logger.info(
+            f"Export normalisation ON: every image -> {normalise_size}x{normalise_size} "
+            f"JPEG q{normalise_quality}, EXIF stripped"
+        )
     # Read split_index.csv
     with open(split_index_csv, 'r', newline='') as f:
         reader = list(csv.DictReader(f))
@@ -160,9 +211,19 @@ def export_dataset(split_index_csv, export_root, config, logger, dry_run=False):
                 row_out['export_path'] = str(abs_dst)
                 export_rows.append(row_out)
             continue
-        export_path, err = safe_copy_file(src_path, abs_dst, overwrite, dry_run)
+        if normalise:
+            export_path, new_w, new_h, err = normalise_and_write(
+                src_path, abs_dst, normalise_size, normalise_quality, overwrite, dry_run
+            )
+            if not err and new_w:
+                # Keep the manifest honest: these are the exported dimensions and
+                # format, not the source's.
+                row_out['width'], row_out['height'] = str(new_w), str(new_h)
+                row_out['format'] = 'JPEG'
+        else:
+            export_path, err = safe_copy_file(src_path, abs_dst, overwrite, dry_run)
         if err:
-            logger.error(f"Failed to copy {src_path} to {abs_dst}: {err}")
+            logger.error(f"Failed to export {src_path} to {abs_dst}: {err}")
             continue
         copied += 1
         copied_per_split[split] += 1

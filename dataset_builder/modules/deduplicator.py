@@ -1,5 +1,7 @@
 import csv
 from collections import defaultdict
+
+from modules.clustering import build_clusters_from_hashes
 from pathlib import Path
 from tqdm import tqdm
 
@@ -126,54 +128,47 @@ def deduplicate_images(index_csv, output_csv, config, logger, dry_run=False):
                     row['phash'] = str(imagehash.phash(img))
                 except Exception:
                     continue
-        # Bucket by first N chars
-        phash_groups = defaultdict(list)
-        for row in reader:
-            if row['path'] in kept and row.get('phash') and len(row['phash']) >= phash_bucket_chars:
-                bucket = row['phash'][:phash_bucket_chars]
-                phash_groups[bucket].append(row)
-        # Transitive clustering
-        for bucket, group in tqdm(phash_groups.items(), desc='Near-duplicate deduplication'):
-            parent = {}
-            def find(x):
-                while parent.get(x, x) != x:
-                    x = parent[x]
-                return x
-            def union(x, y):
-                parent[find(x)] = find(y)
-            for i in range(len(group)):
-                for j in range(i+1, len(group)):
-                    d = hamming_distance(group[i]['phash'], group[j]['phash'])
-                    if d <= phash_threshold:
-                        union(group[i]['path'], group[j]['path'])
-            clusters = defaultdict(list)
-            for r in group:
-                clusters[find(r['path'])].append(r)
-            for cluster in clusters.values():
-                if len(cluster) == 1:
+        # Near-duplicate clustering via multi-index hashing.
+        #
+        # This previously bucketed on the first `phash_bucket_chars` (12) hex
+        # characters and only compared within a bucket -- i.e. it required 48 of
+        # 64 bits to match exactly before the Hamming test could run. Measured
+        # recall on this project's own hashes was 0 of 1,287 genuine pairs, so
+        # what actually ran was exact-pHash matching and the threshold below did
+        # nothing. See modules/clustering.py.
+        candidates = [r for r in reader if r['path'] in kept and r.get('phash')]
+        assignment = build_clusters_from_hashes(
+            [(r['path'], r['phash']) for r in candidates], phash_threshold, logger=logger
+        )
+        phash_clusters = defaultdict(list)
+        for r in candidates:
+            phash_clusters[assignment[r['path']]].append(r)
+
+        for cluster in tqdm(phash_clusters.values(), desc='Near-duplicate deduplication'):
+            if len(cluster) == 1:
+                continue
+            class_labels = set(r['class_label'] for r in cluster)
+            best = tie_breaker(cluster)
+            for r in cluster:
+                if r['path'] == best['path'] or r['path'] not in kept:
                     continue
-                class_labels = set(r['class_label'] for r in cluster)
-                best = tie_breaker(cluster)
-                for r in cluster:
-                    if r['path'] == best['path'] or r['path'] not in kept:
-                        continue
-                    kept.discard(r['path'])
-                    removed.add(r['path'])
-                    near_dupes_removed += 1
-                    if len(class_labels) > 1:
-                        cross_class_count += 1
-                        conflict_context = {
-                            **r,
-                            'conflict_type': 'near',
-                            'conflict_paths': '|'.join([x['path'] for x in cluster]),
-                            'conflict_labels': '|'.join([x['class_label'] for x in cluster]),
-                            'conflict_hash': r.get('phash',''),
-                            'winner_path': best['path'],
-                            'winner_quality_score': best.get('quality_score',''),
-                            'winner_resolution': f"{best.get('width','')}x{best.get('height','')}"
-                        }
-                        cross_class_conflicts.append(conflict_context)
-                        logger.error(f"Cross-class near-duplicate: {r['path']} phash={r.get('phash','')} winner={best['path']}")
+                kept.discard(r['path'])
+                removed.add(r['path'])
+                near_dupes_removed += 1
+                if len(class_labels) > 1:
+                    cross_class_count += 1
+                    conflict_context = {
+                        **r,
+                        'conflict_type': 'near',
+                        'conflict_paths': '|'.join([x['path'] for x in cluster]),
+                        'conflict_labels': '|'.join([x['class_label'] for x in cluster]),
+                        'conflict_hash': r.get('phash',''),
+                        'winner_path': best['path'],
+                        'winner_quality_score': best.get('quality_score',''),
+                        'winner_resolution': f"{best.get('width','')}x{best.get('height','')}"
+                    }
+                    cross_class_conflicts.append(conflict_context)
+                    logger.error(f"Cross-class near-duplicate: {r['path']} phash={r.get('phash','')} winner={best['path']}")
         # Write outputs
         deduped_rows = [row for row in reader if row['path'] in kept]
         if not dry_run:
