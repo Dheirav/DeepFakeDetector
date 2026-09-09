@@ -145,6 +145,30 @@ def main():
     dl_tr = DataLoader(DS(tr), batch_size=args.batch, shuffle=True, num_workers=2)
     dl_te = DataLoader(DS(te), batch_size=args.batch, shuffle=False, num_workers=2)
 
+    def evaluate():
+        dec.eval(); clf.eval()
+        preds, trues, ious = [], [], []
+        with torch.no_grad():
+            for x, y, m, v in dl_te:
+                x, m = x.to(device), m.to(device)
+                fmap, cls = features(x)
+                up = F.interpolate(dec(fmap), size=(args.size, args.size),
+                                   mode="bilinear", align_corners=False).squeeze(1)
+                prob = torch.sigmoid(up)
+                summary = torch.stack([prob.mean((1, 2)), prob.amax((1, 2)),
+                                       (prob > 0.5).float().mean((1, 2))], dim=1)
+                preds += clf(torch.cat([cls, summary], 1)).argmax(1).cpu().tolist()
+                trues += y.tolist()
+                for k in range(x.size(0)):
+                    if y[k].item() == EDITED:
+                        p_, t_ = (prob[k] > 0.5).float(), m[k]
+                        inter = (p_ * t_).sum().item()
+                        union = ((p_ + t_) > 0).float().sum().item()
+                        ious.append(inter / union if union else 0.0)
+        return (np.array(trues), np.array(preds),
+                float(np.mean(ious)) if ious else float("nan"))
+
+    history, best = [], {"accuracy": -1.0}
     for ep in range(args.epochs):
         dec.train(); clf.train(); tot = 0.0
         for x, y, m, v in dl_tr:
@@ -160,43 +184,38 @@ def main():
             loss = dice_bce(up, m, v) + F.cross_entropy(clf(torch.cat([cls, summary], 1)), y)
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item() * x.size(0)
-        print(f"  epoch {ep+1}/{args.epochs}  loss {tot/len(tr):.4f}", flush=True)
+        # Evaluate every epoch. 'Loss still falling' does not imply accuracy is
+        # still improving, and the difference decides whether to train longer.
+        trues, preds, miou = evaluate()
+        acc = float((trues == preds).mean())
+        f1e = float(f1_score(trues, preds, average=None, labels=[0, 1, 2])[EDITED])
+        history.append({"epoch": ep + 1, "loss": tot / len(tr), "accuracy": acc,
+                        "ai_edited_f1": f1e, "mask_iou": miou})
+        star = ""
+        if acc > best["accuracy"]:
+            best = {"epoch": ep + 1, "accuracy": acc, "ai_edited_f1": f1e,
+                    "mask_iou": miou, "trues": trues, "preds": preds}
+            star = "  <- best"
+        print(f"  epoch {ep+1:>3}/{args.epochs}  loss {tot/len(tr):.4f}  "
+              f"acc {acc:.4f}  ai_edited F1 {f1e:.4f}  IoU {miou:.4f}{star}", flush=True)
 
-    dec.eval(); clf.eval()
-    preds, trues, ious = [], [], []
-    with torch.no_grad():
-        for x, y, m, v in dl_te:
-            x, m = x.to(device), m.to(device)
-            fmap, cls = features(x)
-            up = F.interpolate(dec(fmap), size=(args.size, args.size),
-                               mode="bilinear", align_corners=False).squeeze(1)
-            prob = torch.sigmoid(up)
-            summary = torch.stack([prob.mean((1, 2)), prob.amax((1, 2)),
-                                   (prob > 0.5).float().mean((1, 2))], dim=1)
-            preds += clf(torch.cat([cls, summary], 1)).argmax(1).cpu().tolist()
-            trues += y.tolist()
-            for k in range(x.size(0)):
-                if y[k].item() == EDITED:
-                    p_, t_ = (prob[k] > 0.5).float(), m[k]
-                    inter = (p_ * t_).sum().item()
-                    union = ((p_ + t_) > 0).float().sum().item()
-                    ious.append(inter / union if union else 0.0)
-
-    import numpy as np
+    trues, preds, miou = best["trues"], best["preds"], best["mask_iou"]
+    print(f"\n  best epoch: {best['epoch']}/{args.epochs}")
     f1 = f1_score(trues, preds, average=None, labels=[0, 1, 2])
-    acc = float(np.mean(np.array(trues) == np.array(preds)))
-    miou = float(np.mean(ious)) if ious else float("nan")
+    acc = float((trues == preds).mean())
     print(f"\n  accuracy {acc:.4f}")
     for c, v in zip(CLASSES, f1):
         print(f"    {c:<14} F1 {v:.4f}")
-    print(f"  ai_edited mask IoU (n={len(ious)}): {miou:.4f}")
+    print(f"  ai_edited mask IoU (n={int((trues == EDITED).sum())}): {miou:.4f}")
 
     np.save(os.path.join(args.out, "y_true.npy"), np.array(trues))
     np.save(os.path.join(args.out, "y_pred.npy"), np.array(preds))
     json.dump({"encoder": args.encoder, "size": args.size, "epochs": args.epochs,
                "accuracy": acc, "f1": {c: float(v) for c, v in zip(CLASSES, f1)},
-               "ai_edited_mask_iou": miou, "n_masks_scored": len(ious),
-               "note": "frozen encoder; decoder and classifier trained"},
+               "ai_edited_mask_iou": miou, "n_masks_scored": int((trues == EDITED).sum()),
+               "best_epoch": best["epoch"], "history": history,
+               "note": "frozen encoder; decoder and classifier trained; "
+                       "reported figures are from the best epoch by accuracy"},
               open(os.path.join(args.out, "training_summary.json"), "w"), indent=2)
     print(f"  saved -> {args.out}")
 
