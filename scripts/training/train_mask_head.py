@@ -38,6 +38,29 @@ EDITED = 2
 GENERATED = 1
 
 
+def build_decoder(dim):
+    """Patch grid up to full resolution. Module-level so evaluation scripts can
+    rebuild it from a checkpoint without duplicating the definition."""
+    import torch.nn as nn
+    import torch.nn.functional as F
+    class Decoder(nn.Module):
+        """32x32 patch grid up to full resolution."""
+        def __init__(self, dim):
+            super().__init__()
+            def block(i, o):
+                return nn.Sequential(nn.Conv2d(i, o, 3, padding=1),
+                                     nn.BatchNorm2d(o), nn.GELU())
+            self.b = nn.ModuleList([block(dim, 192), block(192, 96),
+                                    block(96, 48), block(48, 24)])
+            self.head = nn.Conv2d(24, 1, 1)
+        def forward(self, f):
+            for blk in self.b:
+                f = blk(F.interpolate(f, scale_factor=2, mode="bilinear",
+                                      align_corners=False))
+            return self.head(f)
+    return Decoder(dim)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -103,21 +126,6 @@ def main():
             # generated images get no mask supervision, flagged here
             return x, y, mask, float(y != GENERATED)
 
-    class Decoder(nn.Module):
-        """32x32 patch grid up to full resolution."""
-        def __init__(self, dim):
-            super().__init__()
-            def block(i, o):
-                return nn.Sequential(nn.Conv2d(i, o, 3, padding=1),
-                                     nn.BatchNorm2d(o), nn.GELU())
-            self.b = nn.ModuleList([block(dim, 192), block(192, 96),
-                                    block(96, 48), block(48, 24)])
-            self.head = nn.Conv2d(24, 1, 1)
-        def forward(self, f):
-            for blk in self.b:
-                f = blk(F.interpolate(f, scale_factor=2, mode="bilinear",
-                                      align_corners=False))
-            return self.head(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     enc = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
@@ -132,7 +140,7 @@ def main():
     if cw is not None:
         print(f"  class weights: {args.class_weights}")
 
-    dec = Decoder(dim).to(device)
+    dec = build_decoder(dim).to(device)
     # classifier sees the pooled encoder token plus what the mask says
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
     opt = torch.optim.AdamW(list(dec.parameters()) + list(clf.parameters()), lr=args.lr)
