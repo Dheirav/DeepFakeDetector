@@ -17,15 +17,20 @@ something that could tell the difference.
 
 ## ⚠️ Status
 
-**The trained models in this repository do not detect AI-generated content. They
-recognise which source dataset an image came from.** The project is being rebuilt
-on a corrected corpus; the measurements that establish the problem are below and
-are the current substance of the work.
+**The original models in this repository do not detect AI-generated content. They
+recognise which source dataset an image came from.** That is established below
+with measurements rather than asserted.
 
-- Full limitations, with evidence: **[`LIMITATIONS.md`](LIMITATIONS.md)**
+A rebuild is under way on a corpus verified to carry no such shortcut, and its
+first results are in [The rebuild](#the-rebuild). The honest number is **65.8%**,
+against the original 89%, and the gap between those two figures is the whole
+point of the project.
+
+- Full limitations, for both models: **[`LIMITATIONS.md`](LIMITATIONS.md)**
 - Audit trail: [`docs/REVIEW_2026-09-08.md`](docs/REVIEW_2026-09-08.md) ·
   [`docs/DATASET_BUILDER_AUDIT.md`](docs/DATASET_BUILDER_AUDIT.md)
-- Where it goes next: [`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md)
+- Dataset survey and confound measurements: [`docs/DATASETS_2026.md`](docs/DATASETS_2026.md)
+- Plan: [`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md)
 
 ---
 
@@ -140,6 +145,150 @@ and only the manipulation differs. About 11,400 such pairs are recoverable from
 filenames already in this dataset — DEFACTO, CASIA and IMD2020 all encode their
 source image's ID. That is what the rebuild is built around; see
 [`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md).
+
+---
+
+## The rebuild
+
+The findings above say what went wrong. This section says what happened when the
+same task was attempted on a corpus where the shortcut does not exist.
+
+<!-- ✍️  YOUR WORDS: a sentence or two on deciding to rebuild rather than patch. -->
+
+### A dataset where the shortcut is measurably absent
+
+The corpus is a slice of **OpenSDI** (`nebula/OpenSDI_train`), which supplies all
+three classes from a single real-image pool with segmentation masks for the
+edited class. Its binary label decomposes into the three needed here through the
+`key` field, where `entire/` marks a fully synthetic image and `partial/` a
+locally edited one.
+
+OpenSDI was not taken on trust. Measured as shipped, on shards holding the same
+photographs edited and unedited, the geometry is clean but **the JPEG
+quantisation table separates the classes at 93.8%**, because editing requires
+re-saving and the editor used 16 distinct quality settings against the originals'
+3. That signal is "was this re-encoded by the editor", not a manipulation trace,
+and it is intrinsic to any locally-manipulated dataset rather than a defect of
+this one.
+
+Re-encoding every image identically removes it. Measured on the converted output,
+3600 images across three classes:
+
+| feature | accuracy | over baseline |
+|---|---|---|
+| majority-class baseline | 49.6% | |
+| container format | 49.6% | +0.0 |
+| resolution, megapixels, aspect ratio | 49.6% | +0.0 |
+| file size | 49.6% | +0.0 |
+| JPEG quantisation table | 49.6% | +0.0 |
+
+Every metadata feature sits exactly at the baseline, carrying **zero** information
+about the class. The same probe scores 87.4% on this project's original corpus
+and 93.0% on OpenSDI as shipped.
+
+### The honest number
+
+A linear probe on frozen DINOv2 features, because fine-tuning moves a network
+toward whatever separates the training classes, and when a shortcut is available
+that is what it moves toward. Kumar et al. (ICLR 2022) measured fine-tuning at
+roughly +2 points in-domain and −7 out-of-domain against a probe on the same
+features. The probe is also the control: a fine-tuned network that cannot beat it
+learned nothing the frozen features did not already contain.
+
+| | original model | linear probe |
+|---|---|---|
+| dataset | confounded | verified clean |
+| accuracy | 0.890 | **0.658** |
+| `real` F1 | 0.854 | 0.688 |
+| `ai_generated` F1 | 0.976 | 0.775 |
+| `ai_edited` F1 | **0.861** | **0.465** |
+
+The `ai_edited` row is the one that matters. 0.86 is not achievable at this
+resolution: manipulations of this kind average 1.7% tampered pixels, and
+published image-level methods score 0.8 to 6.9 percent on tampered detection at
+224px. The original 0.86 was therefore evidence of a shortcut rather than of
+detection, while 0.465 on a corpus carrying no metadata signal is a believable
+number for the same task. 65.8% overall also sits inside the 65 to 80 percent
+band the literature reports for held-out-corpus evaluation.
+
+### It still breaks under compression, differently
+
+The same degradation grid, on 600 held-out images:
+
+| condition | probe | original model |
+|---|---|---|
+| clean | 0.667 | 0.993 |
+| 320px / q85 | 0.615 | 0.680 |
+| 256px / q80 | **0.533** | **0.027** |
+
+Against a 0.520 majority-class baseline, the probe at 256px q80 is **1.3 points
+above guessing "real" for everything**. It does not survive compression.
+
+What differs is the failure mode. The original model *inverted*, reaching 0.027
+by calling 280 of 300 AI-generated images real at 87% mean confidence, which is
+confidently and systematically wrong. The probe *decays toward chance*. Per-class
+recall shows the mechanism: real recall falls from 0.731 to 0.397 while both fake
+classes improve, so under compression the probe increasingly calls everything
+fake. That is the mirror image of the original model's bias toward calling
+everything real, which is the same weakness with the opposite sign.
+
+### Transfer tracks architectural distance
+
+OpenSDI trains on sd15 and ships a test set spanning five generators, making
+leave-one-generator-out the protocol the dataset was built for. Per-class recall
+on `ai_generated`:
+
+| generator | recall | relationship to training generator |
+|---|---|---|
+| sd2 | 0.718 | same family |
+| sd3 | 0.667 | same family |
+| sdxl | 0.463 | same family, different scale |
+| flux | 0.470 | different architecture |
+
+On flux the probe calls 193 of 400 synthetic images real against 188 correct,
+which is close to a coin flip on a generator it has not seen. This is the
+field-wide result rather than a peculiarity of this project: detectors learn
+generator-specific artefacts, not a general notion of "synthetic".
+
+### Encoder capacity is not the bottleneck
+
+| encoder | dim | accuracy |
+|---|---|---|
+| DINOv2 ViT-S/14 | 384 | 0.6583 |
+| DINOv2 ViT-B/14 | 768 | 0.6296 |
+| DINOv2 ViT-L/14 | 1024 | 0.6593 |
+
+Paired McNemar: S against L gives **p = 1.000**, S against B p = 0.132, B against
+L p = 0.119. All three are statistically indistinguishable, so ten times the
+parameters bought a rounding error.
+
+The per-class split says where the constraint actually is. Going from ViT-S to
+ViT-L, `ai_generated` F1 improves from 0.775 to 0.802 while `ai_edited` moves from
+0.465 to 0.453, which is no improvement. Whether a whole image is synthetic is a
+global property that a richer representation can exploit, whereas a local edit
+covering a small fraction of the frame is destroyed by the resize to 224px before
+the encoder ever sees it. No encoder recovers information thrown away upstream of
+it.
+
+**So the lever for `ai_edited` is resolution and a mask head, not a bigger
+backbone**, and the masks are already downloaded.
+
+<!-- ✍️  YOUR WORDS: what you take from the rebuild. -->
+
+### Reproducing this
+
+```bash
+# build the dataset (downloads shards, normalises, deletes them after)
+venv-linux/bin/python dataset_builder/tools/convert_opensdi.py
+
+# confirm the shortcut is absent before training on it
+venv-linux/bin/python scripts/data/metadata_confound.py data_sources/opensdi
+
+# train and evaluate
+venv-linux/bin/python scripts/training/train_linear_probe.py
+venv-linux/bin/python scripts/evaluation/degradation_test.py
+venv-linux/bin/python scripts/evaluation/heldout_generator_test.py
+```
 
 ---
 

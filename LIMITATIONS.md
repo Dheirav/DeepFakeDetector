@@ -204,6 +204,53 @@ making the output class-independent).
 
 ---
 
+## 9. Limitations of the rebuilt model
+
+Sections 1 to 8 describe the original fine-tuned model. The linear probe trained
+on the verified-clean OpenSDI slice is a different object with different
+problems, and it should not be quoted without these.
+
+**It does not survive compression.** At 256px JPEG q80 it scores 0.533 against a
+0.520 majority-class baseline, which is 1.3 points above predicting "real" for
+everything. It would not work on an image taken off the web. The improvement over
+the original model is in failure *mode*, not in robustness: the original inverted
+to 0.027, meaning confidently and systematically wrong, while the probe decays
+toward chance. A model that becomes useless is safer than one that becomes
+backwards, but neither detects anything under those conditions.
+
+**It does not transfer well to unfamiliar generators.** Trained on sd15, recall on
+`ai_generated` is 0.718 on sd2 and 0.667 on sd3, both close relatives, against
+0.463 on sdxl and 0.470 on flux. On flux it calls 193 of 400 synthetic images real
+against 188 correct. It has learned what sd15 looks like rather than what
+generated images look like.
+
+**`ai_edited` is weak everywhere, including on the generator it trained on.** 0.458
+recall on the sd15 control means the modest cross-generator drop is not evidence
+of transfer; it is a small decline from a low number. The cause is resolution, not
+representation: scaling the encoder from ViT-S to ViT-L moved that class from
+0.465 to 0.453 F1, i.e. not at all, while `ai_generated` improved. A local edit
+covering roughly 1.7% of the frame does not survive a resize to 224px.
+
+**The 65.8% is in-distribution.** It uses a stratified random split within sampled
+sd15 shards, so it measures performance on a clean dataset rather than transfer.
+The cross-generator figures above are the transfer numbers, and they are lower.
+
+**The training set is small.** 2520 images against 1155 model parameters. The
+encoder comparison rules out capacity as the constraint but does not rule out data
+volume, which is untested.
+
+**The `ai_generated` cross-generator column has no control.** Both sd15 test shards
+sampled happened to hold `ai_edited`, so that column cannot separate "unseen
+generator" from "unseen images". The `ai_edited` comparison does have its control
+and should be preferred where the distinction matters.
+
+**Reproducibility caveat.** Shard selection was chosen by hand after probing the
+layout, and OpenSDI's shards are class-ordered, so a different selection would
+give a different class mix. The exact shards used are recorded in
+`dataset_builder/tools/convert_opensdi.py`.
+
+---
+
 ## What this repository currently demonstrates
 
 Not a working detector. It demonstrates, with measurements, **how a
