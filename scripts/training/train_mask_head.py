@@ -51,6 +51,13 @@ def main():
     ap.add_argument("--test-size", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="results/mask_head")
+    ap.add_argument("--class-weights", type=float, nargs=3, default=None,
+                    metavar=("W_REAL", "W_GEN", "W_EDIT"),
+                    help="per-class loss weights. Scaling the data made the "
+                         "decoder more sensitive, so the classifier began "
+                         "following it into authentic images: real recall fell "
+                         "0.798 to 0.591 with the lost images going to "
+                         "ai_edited. Upweighting real counteracts that.")
     args = ap.parse_args()
     assert args.size % 14 == 0, "DINOv2 patches are 14px; size must be a multiple of 14"
 
@@ -120,6 +127,11 @@ def main():
     dim = enc.embed_dim
     grid = args.size // 14
 
+    cw = (torch.tensor(args.class_weights, dtype=torch.float32).to(device)
+          if args.class_weights else None)
+    if cw is not None:
+        print(f"  class weights: {args.class_weights}")
+
     dec = Decoder(dim).to(device)
     # classifier sees the pooled encoder token plus what the mask says
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
@@ -147,7 +159,7 @@ def main():
 
     def evaluate():
         dec.eval(); clf.eval()
-        preds, trues, ious = [], [], []
+        preds, trues, ious, probs = [], [], [], []
         with torch.no_grad():
             for x, y, m, v in dl_te:
                 x, m = x.to(device), m.to(device)
@@ -157,7 +169,9 @@ def main():
                 prob = torch.sigmoid(up)
                 summary = torch.stack([prob.mean((1, 2)), prob.amax((1, 2)),
                                        (prob > 0.5).float().mean((1, 2))], dim=1)
-                preds += clf(torch.cat([cls, summary], 1)).argmax(1).cpu().tolist()
+                logits = clf(torch.cat([cls, summary], 1))
+                probs.append(F.softmax(logits, dim=1).cpu().numpy())
+                preds += logits.argmax(1).cpu().tolist()
                 trues += y.tolist()
                 for k in range(x.size(0)):
                     if y[k].item() == EDITED:
@@ -166,7 +180,8 @@ def main():
                         union = ((p_ + t_) > 0).float().sum().item()
                         ious.append(inter / union if union else 0.0)
         return (np.array(trues), np.array(preds),
-                float(np.mean(ious)) if ious else float("nan"))
+                float(np.mean(ious)) if ious else float("nan"),
+                np.concatenate(probs) if probs else np.zeros((0, 3)))
 
     history, best = [], {"accuracy": -1.0}
     for ep in range(args.epochs):
@@ -181,12 +196,12 @@ def main():
             prob = torch.sigmoid(up)
             summary = torch.stack([prob.mean((1, 2)), prob.amax((1, 2)),
                                    (prob > 0.5).float().mean((1, 2))], dim=1)
-            loss = dice_bce(up, m, v) + F.cross_entropy(clf(torch.cat([cls, summary], 1)), y)
+            loss = dice_bce(up, m, v) + F.cross_entropy(clf(torch.cat([cls, summary], 1)), y, weight=cw)
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item() * x.size(0)
         # Evaluate every epoch. 'Loss still falling' does not imply accuracy is
         # still improving, and the difference decides whether to train longer.
-        trues, preds, miou = evaluate()
+        trues, preds, miou, probs = evaluate()
         acc = float((trues == preds).mean())
         f1e = float(f1_score(trues, preds, average=None, labels=[0, 1, 2])[EDITED])
         history.append({"epoch": ep + 1, "loss": tot / len(tr), "accuracy": acc,
@@ -194,7 +209,14 @@ def main():
         star = ""
         if acc > best["accuracy"]:
             best = {"epoch": ep + 1, "accuracy": acc, "ai_edited_f1": f1e,
-                    "mask_iou": miou, "trues": trues, "preds": preds}
+                    "mask_iou": miou, "trues": trues, "preds": preds,
+                    "probs": probs}
+            # Keep the weights of the best epoch, not the last, so threshold
+            # work later needs no retraining.
+            torch.save({"decoder": dec.state_dict(), "classifier": clf.state_dict(),
+                        "encoder": args.encoder, "size": args.size,
+                        "epoch": ep + 1},
+                       os.path.join(args.out, "best_model.pth"))
             star = "  <- best"
         print(f"  epoch {ep+1:>3}/{args.epochs}  loss {tot/len(tr):.4f}  "
               f"acc {acc:.4f}  ai_edited F1 {f1e:.4f}  IoU {miou:.4f}{star}", flush=True)
@@ -208,6 +230,7 @@ def main():
         print(f"    {c:<14} F1 {v:.4f}")
     print(f"  ai_edited mask IoU (n={int((trues == EDITED).sum())}): {miou:.4f}")
 
+    np.save(os.path.join(args.out, "probs.npy"), best["probs"])
     np.save(os.path.join(args.out, "y_true.npy"), np.array(trues))
     np.save(os.path.join(args.out, "y_pred.npy"), np.array(preds))
     json.dump({"encoder": args.encoder, "size": args.size, "epochs": args.epochs,
