@@ -427,6 +427,64 @@ Fully covered in `docs/BENCHMARK_LIVENESS_2026-09-08.md`, verified the same day.
 
 ---
 
+## 5b. OpenSDI measured — 2026-09-09
+
+The primary recommendation was made without measuring OpenSDI's own confound,
+because its shards are class-ordered and a single-shard sample is single-class.
+Measured properly now, using shard 0 (`partial/fake`) against shard 35
+(`partial/real`) — the sharpest possible pairing, since those are the *same
+photographs* edited and unedited.
+
+    classes: partial/fake 608, partial/real 592   baseline 51.7%
+
+      container format              48.3%   ( -3.3 pts)
+      colour mode                   48.3%   ( -3.3 pts)
+      resolution (exact)            48.8%   ( -2.8 pts)
+      megapixels                    48.7%   ( -3.0 pts)
+      aspect ratio                  48.7%   ( -3.0 pts)
+      file size (10 KB bucket)      54.5%   ( +2.8 pts)
+      JPEG quantisation table       93.8%   (+42.2 pts)  <-- LEAK
+
+**The geometry is clean.** Format, resolution, megapixels and aspect ratio all
+sit *below* the majority-class baseline — they carry no class information at all.
+That is what matched pairing buys, and it is exactly where So-Fake-Set (71.1% on
+megapixels), DailyBench (100.0% on resolution) and this project's own corpus
+(87.4% on format+resolution) fail.
+
+**But the JPEG quantisation table separates the classes at 93.8%.** The cause,
+measured on 416 images per class:
+
+    partial/real (originals)   3 distinct quantisation tables, one covering 88%
+    partial/fake (edited)     16 distinct tables, spread
+    shared by both classes     3
+
+The originals come from one consistent source pipeline; the edited versions were
+re-saved by the editing tool at varying quality. So the signal is *"was this
+re-encoded by the editor"* — a re-encoding fingerprint, not a manipulation trace.
+
+**This is intrinsic, not an OpenSDI defect.** Editing an image requires re-saving
+it, so any locally-manipulated image necessarily carries a different encoding
+history from its original. Every dataset of this kind has the same property. It
+is simply invisible unless someone looks.
+
+### The mitigation works, measured
+
+Re-encoding *both* classes identically — what `normalise_on_export` does — removes
+it completely:
+
+    as shipped                                     93.0%   (baseline 51.0%)
+    after normalise_on_export (512px, JPEG q90)    49.0%   (baseline 51.0%)
+
+Chance, and marginally below the baseline. **So OpenSDI is usable, and
+`normalise_on_export: true` is mandatory rather than optional for it.** Training
+on the shards as shipped would produce a model that detects the editing tool's
+JPEG encoder.
+
+Reproduce with:
+
+    venv-linux/bin/python scripts/data/metadata_confound.py <dir-of-shards> \
+        --limit 1200 --key-col key
+
 ## 6. Ranked recommendation
 
 Budget 20-40 GB, one RTX 4060 8 GB, WSL capped at 8 GB RAM, 3 classes + masks.

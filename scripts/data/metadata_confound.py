@@ -20,6 +20,8 @@ conventional 0_real/1_fake and real/full_synthetic/tampered layouts both work as
 """
 
 import argparse
+import glob
+import os
 import collections
 import io
 import pathlib
@@ -110,7 +112,45 @@ def load_zip(archive, limit):
 def load_parquet(path, limit, label_col, image_col, key_col):
     import pyarrow.parquet as pq
 
-    for record in pq.read_table(path).to_pylist()[:limit]:
+    # Stream row-group batches. read_table(...).to_pylist()[:limit] materialises
+    # the ENTIRE shard as Python objects before slicing -- on a 490MB image shard
+    # that is several GB of dicts, which is enough to take down an 8GB WSL VM.
+    def _shards():
+        # A directory of shards is the normal case for OpenSDI-style datasets,
+        # where each shard holds a single class -- measuring a confound needs
+        # several of them together.
+        if os.path.isdir(path):
+            found = sorted(glob.glob(os.path.join(path, "**", "*.parquet"), recursive=True))
+            if not found:
+                raise SystemExit(f"no .parquet files under {path}")
+            return found
+        return [path]
+
+    def _records():
+        shards = _shards()
+        # Round-robin across shards so a per-shard class ordering does not mean
+        # the sample is entirely one class.
+        readers = []
+        for sp in shards:
+            pf = pq.ParquetFile(sp)
+            cols = [c for c in (image_col, label_col, key_col) if c
+                    and c in pf.schema_arrow.names]
+            readers.append(iter(pf.iter_batches(batch_size=32, columns=cols)))
+        seen, live = 0, list(range(len(readers)))
+        while live and seen < limit:
+            for i in list(live):
+                try:
+                    batch = next(readers[i])
+                except StopIteration:
+                    live.remove(i)
+                    continue
+                for rec in batch.to_pylist():
+                    yield rec
+                    seen += 1
+                    if seen >= limit:
+                        return
+
+    for record in _records():
         image = record[image_col]
         blob = image["bytes"] if isinstance(image, dict) else image
         if key_col and record.get(key_col):
@@ -137,7 +177,11 @@ def main():
     args = parser.parse_args()
 
     source = pathlib.Path(args.source)
-    if source.is_dir():
+    if source.is_dir() and glob.glob(str(source / "**" / "*.parquet"), recursive=True):
+        # A directory of parquet shards, not a directory of image files.
+        loader = load_parquet(str(source), args.limit, args.label_col,
+                              args.image_col, args.key_col)
+    elif source.is_dir():
         loader = load_directory(source, args.limit)
     elif source.suffix == ".zip":
         loader = load_zip(source, args.limit)
