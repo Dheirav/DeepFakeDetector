@@ -1,0 +1,14 @@
+{
+  "encoder": "dinov2_vits14",
+  "size": 448,
+  "epochs": 12,
+  "accuracy": 0.7157407407407408,
+  "f1": {
+    "real": 0.7414721723518851,
+    "ai_generated": 0.8273244781783681,
+    "ai_edited": 0.5472061657032755
+  },
+  "ai_edited_mask_iou": 0.25205491419127357,
+  "n_masks_scored": 270,
+  "note": "frozen encoder; decoder and classifier trained"
+}
