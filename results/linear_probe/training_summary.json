@@ -1,0 +1,9 @@
+{
+  "encoder": "dinov2_vits14",
+  "test_accuracy": 0.6583333333333333,
+  "n_train": 2520,
+  "n_test": 1080,
+  "data_dir": "data_sources/opensdi",
+  "seed": 42,
+  "note": "linear probe on frozen features; backbone never updated"
+}
