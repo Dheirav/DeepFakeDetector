@@ -1,0 +1,73 @@
+{
+  "encoder": "dinov2_vits14",
+  "size": 672,
+  "epochs": 8,
+  "accuracy": 0.7286419753086419,
+  "f1": {
+    "real": 0.6257440476190477,
+    "ai_generated": 0.9083395942900075,
+    "ai_edited": 0.6552727272727272
+  },
+  "ai_edited_mask_iou": 0.3813818829146729,
+  "n_masks_scored": 1350,
+  "best_epoch": 7,
+  "history": [
+    {
+      "epoch": 1,
+      "loss": 1.7638903211538124,
+      "accuracy": 0.6960493827160494,
+      "ai_edited_f1": 0.5917785917785918,
+      "mask_iou": 0.3445135292180139
+    },
+    {
+      "epoch": 2,
+      "loss": 1.4664910940383438,
+      "accuracy": 0.7162962962962963,
+      "ai_edited_f1": 0.6668948990071893,
+      "mask_iou": 0.3659913386497155
+    },
+    {
+      "epoch": 3,
+      "loss": 1.2977792428276396,
+      "accuracy": 0.7133333333333334,
+      "ai_edited_f1": 0.6058451816745656,
+      "mask_iou": 0.33455396043333363
+    },
+    {
+      "epoch": 4,
+      "loss": 1.156425845647704,
+      "accuracy": 0.711604938271605,
+      "ai_edited_f1": 0.6028481012658228,
+      "mask_iou": 0.37279710064753196
+    },
+    {
+      "epoch": 5,
+      "loss": 1.066464996757963,
+      "accuracy": 0.7162962962962963,
+      "ai_edited_f1": 0.637020144431775,
+      "mask_iou": 0.35466796995829747
+    },
+    {
+      "epoch": 6,
+      "loss": 1.0039750244438208,
+      "accuracy": 0.7160493827160493,
+      "ai_edited_f1": 0.6268431001890359,
+      "mask_iou": 0.3578157128937949
+    },
+    {
+      "epoch": 7,
+      "loss": 0.9766431370513393,
+      "accuracy": 0.7286419753086419,
+      "ai_edited_f1": 0.6552727272727272,
+      "mask_iou": 0.3813818829146729
+    },
+    {
+      "epoch": 8,
+      "loss": 0.9444051251672272,
+      "accuracy": 0.7251851851851852,
+      "ai_edited_f1": 0.6363636363636364,
+      "mask_iou": 0.36011306333703064
+    }
+  ],
+  "note": "frozen encoder; decoder and classifier trained; reported figures are from the best epoch by accuracy"
+}
