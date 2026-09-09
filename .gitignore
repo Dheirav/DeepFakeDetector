@@ -82,3 +82,8 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Cached frozen-encoder features. Derived from the images by
+# scripts/training/train_linear_probe.py and regenerated in minutes, so there is
+# no reason to carry ~40MB of float matrices in git.
+results/*/features_*.npz
