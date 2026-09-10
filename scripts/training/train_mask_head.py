@@ -140,16 +140,33 @@ def main():
         vis = enc.visual
         patch = vis.conv1.kernel_size[0]
         dim = vis.conv1.out_channels
-        assert args.size == vis.input_resolution, (
-            f"CLIP {args.encoder} has fixed positional embeddings for "
-            f"{vis.input_resolution}px; pass --size {vis.input_resolution}")
+        native = vis.input_resolution // patch
         grid = args.size // patch
+        assert args.size % patch == 0, f"size must be a multiple of the {patch}px patch"
+
+        # CLIP's positional embeddings are learned for a fixed input resolution,
+        # so running at any other size needs them resampled. Without this the
+        # encoder is locked to 224px and a 14x14 grid, which cost 36% of mask IoU
+        # against DINOv2's 32x32 at 448px: better features, far coarser grid.
+        # Bicubic on the 2D grid is the standard treatment. The class token's
+        # embedding is positionless and is carried across untouched.
+        pe = vis.positional_embedding
+        if grid != native:
+            cls_pe, patch_pe = pe[:1], pe[1:]
+            patch_pe = patch_pe.reshape(1, native, native, dim).permute(0, 3, 1, 2)
+            patch_pe = F.interpolate(patch_pe, size=(grid, grid), mode="bicubic",
+                                     align_corners=False)
+            patch_pe = patch_pe.permute(0, 2, 3, 1).reshape(grid * grid, dim)
+            pe = torch.cat([cls_pe, patch_pe], dim=0)
+            print(f"  interpolated CLIP positional embeddings "
+                  f"{native}x{native} -> {grid}x{grid}")
+        pe = pe.to(device)
 
         def features(x):
             z = vis.conv1(x).reshape(x.size(0), dim, -1).permute(0, 2, 1)
             cls = vis.class_embedding + torch.zeros(x.size(0), 1, z.size(-1),
                                                     dtype=z.dtype, device=z.device)
-            z = torch.cat([cls, z], dim=1) + vis.positional_embedding
+            z = torch.cat([cls, z], dim=1) + pe
             z = vis.ln_post(vis.transformer(vis.ln_pre(z).permute(1, 0, 2)).permute(1, 0, 2))
             fmap = z[:, 1:, :].transpose(1, 2).reshape(x.size(0), dim, grid, grid)
             return fmap, z[:, 0, :]
