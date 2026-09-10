@@ -49,7 +49,7 @@ def main():
     from torchvision import transforms
 
     os.makedirs(args.out, exist_ok=True)
-    cache = os.path.join(args.out, f"features_{args.encoder}.npz")
+    cache = os.path.join(args.out, f"features_{args.encoder.replace(':','_')}.npz")
 
     if os.path.exists(cache) and not args.recompute:
         blob = np.load(cache, allow_pickle=True)
@@ -67,21 +67,33 @@ def main():
         print(f"  {len(files)} images across {len(CLASSES)} classes")
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
-        model.eval().to(device)
-        # DINOv2 patches are 14px, so the edge must be a multiple of 14.
-        tf = transforms.Compose([
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        if args.encoder.startswith("clip:"):
+            # CLIP was trained on image-text pairs rather than for semantic
+            # correspondence, and UnivFD's result was a linear probe on frozen
+            # CLIP features, so it is the natural comparison against DINOv2.
+            # It ships its own preprocessing, which must be used: the
+            # normalisation constants differ from ImageNet's.
+            name = args.encoder.split(":", 1)[1]
+            model, tf = torch.hub.load("openai/CLIP", name, trust_repo=True)
+            model.eval().to(device)
+            encode = lambda b: model.encode_image(b).float()
+        else:
+            model = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
+            model.eval().to(device)
+            # DINOv2 patches are 14px, so the edge must be a multiple of 14.
+            tf = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ])
+            encode = model
 
         feats = []
         for i in range(0, len(files), args.batch):
             batch = torch.stack([tf(Image.open(p).convert("RGB"))
                                  for p in files[i:i + args.batch]]).to(device)
             with torch.no_grad():
-                feats.append(model(batch).cpu().numpy())
+                feats.append(encode(batch).cpu().numpy())
             if (i // args.batch) % 20 == 0:
                 print(f"    {min(i + args.batch, len(files))}/{len(files)}", flush=True)
         X = np.concatenate(feats)
