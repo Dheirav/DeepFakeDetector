@@ -69,6 +69,10 @@ def main():
     ap.add_argument("--encoder", default="dinov2_vits14")
     ap.add_argument("--size", type=int, default=448, help="must be a multiple of 14")
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--workers", type=int, default=2,
+                    help="DataLoader workers. Each forks the parent, which for a "
+                         "CUDA-initialised process is expensive in RAM; use 0 on a "
+                         "memory-constrained box.")
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--test-size", type=float, default=0.3)
@@ -191,8 +195,12 @@ def main():
     if cw is not None:
         print(f"  class weights: {args.class_weights}")
 
-    assert grid * 16 == args.size, (
-        f"decoder doubles 4 times: {grid}x{grid} -> {grid*16}px, but size is {args.size}")
+    # The decoder doubles four times, and its output is then resized to
+    # args.size, so the grid does not have to land on the input size exactly.
+    # Warn when the mismatch is large, because a big resize wastes decoder
+    # capacity or invents detail that is not there.
+    if abs(grid * 16 - args.size) / args.size > 0.30:
+        print(f"  warning: decoder reaches {grid*16}px but target is {args.size}px")
     dec = build_decoder(dim).to(device)
     # classifier sees the pooled encoder token plus what the mask says
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
@@ -208,8 +216,8 @@ def main():
         dice = 1 - (2 * inter + 1) / (p.sum(dim=(1, 2)) + t.sum(dim=(1, 2)) + 1)
         return bce + dice.mean()
 
-    dl_tr = DataLoader(DS(tr), batch_size=args.batch, shuffle=True, num_workers=2)
-    dl_te = DataLoader(DS(te), batch_size=args.batch, shuffle=False, num_workers=2)
+    dl_tr = DataLoader(DS(tr), batch_size=args.batch, shuffle=True, num_workers=args.workers)
+    dl_te = DataLoader(DS(te), batch_size=args.batch, shuffle=False, num_workers=args.workers)
 
     def evaluate():
         dec.eval(); clf.eval()
