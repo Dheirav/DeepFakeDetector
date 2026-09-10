@@ -82,7 +82,8 @@ def main():
                          "0.798 to 0.591 with the lost images going to "
                          "ai_edited. Upweighting real counteracts that.")
     args = ap.parse_args()
-    assert args.size % 14 == 0, "DINOv2 patches are 14px; size must be a multiple of 14"
+    if not args.encoder.startswith("clip:"):
+        assert args.size % 14 == 0, "DINOv2 patches are 14px"
 
     import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
     from PIL import Image
@@ -128,29 +129,57 @@ def main():
 
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    enc = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
-    enc.eval().to(device)
+    is_clip = args.encoder.startswith("clip:")
+    if is_clip:
+        # CLIP has no forward_features, so the visual tower is run manually to
+        # reach the patch tokens before pooling. It also loads in fp16 on CUDA,
+        # which will not mix with fp32 inputs, hence .float().
+        enc, _ = torch.hub.load("openai/CLIP", args.encoder.split(":", 1)[1],
+                                trust_repo=True)
+        enc = enc.float().eval().to(device)
+        vis = enc.visual
+        patch = vis.conv1.kernel_size[0]
+        dim = vis.conv1.out_channels
+        assert args.size == vis.input_resolution, (
+            f"CLIP {args.encoder} has fixed positional embeddings for "
+            f"{vis.input_resolution}px; pass --size {vis.input_resolution}")
+        grid = args.size // patch
+
+        def features(x):
+            z = vis.conv1(x).reshape(x.size(0), dim, -1).permute(0, 2, 1)
+            cls = vis.class_embedding + torch.zeros(x.size(0), 1, z.size(-1),
+                                                    dtype=z.dtype, device=z.device)
+            z = torch.cat([cls, z], dim=1) + vis.positional_embedding
+            z = vis.ln_post(vis.transformer(vis.ln_pre(z).permute(1, 0, 2)).permute(1, 0, 2))
+            fmap = z[:, 1:, :].transpose(1, 2).reshape(x.size(0), dim, grid, grid)
+            return fmap, z[:, 0, :]
+    else:
+        enc = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
+        enc.eval().to(device)
+        dim = enc.embed_dim
+        grid = args.size // 14
+
+        def features(x):
+            out = enc.forward_features(x)
+            fmap = out["x_norm_patchtokens"].transpose(1, 2).reshape(
+                x.size(0), dim, grid, grid)
+            return fmap, out["x_norm_clstoken"]
+
     for p in enc.parameters():
         p.requires_grad = False
-    dim = enc.embed_dim
-    grid = args.size // 14
+    print(f"  {args.encoder} @ {args.size}px -> {grid}x{grid} grid, {dim}-dim")
 
     cw = (torch.tensor(args.class_weights, dtype=torch.float32).to(device)
           if args.class_weights else None)
     if cw is not None:
         print(f"  class weights: {args.class_weights}")
 
+    assert grid * 16 == args.size, (
+        f"decoder doubles 4 times: {grid}x{grid} -> {grid*16}px, but size is {args.size}")
     dec = build_decoder(dim).to(device)
     # classifier sees the pooled encoder token plus what the mask says
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
     opt = torch.optim.AdamW(list(dec.parameters()) + list(clf.parameters()), lr=args.lr)
-
-    def features(x):
-        out = enc.forward_features(x)
-        toks = out["x_norm_patchtokens"]              # B, grid*grid, dim
-        cls = out["x_norm_clstoken"]                  # B, dim
-        fmap = toks.transpose(1, 2).reshape(x.size(0), dim, grid, grid)
-        return fmap, cls
 
     def dice_bce(logit, target, valid):
         if valid.sum() == 0:
