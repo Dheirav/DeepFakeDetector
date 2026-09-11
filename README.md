@@ -21,10 +21,11 @@ something that could tell the difference.
 recognise which source dataset an image came from.** That is established below
 with measurements rather than asserted.
 
-A rebuild is under way on a corpus verified to carry no such shortcut, and its
-first results are in [The rebuild](#the-rebuild). The honest number is **65.8%**,
-against the original 89%, and the gap between those two figures is the whole
-point of the project.
+The rebuild on a corpus verified to carry no such shortcut is in
+[The rebuild](#the-rebuild). The first honest number was **65.8%** against the
+original 89%, and the gap between those two figures is the whole point of the
+project. The final model, a CLIP ViT-B/16 mask head, reaches **80.4%** on the same
+clean data, still below the original's headline and worth more than it.
 
 - Full limitations, for both models: **[`LIMITATIONS.md`](LIMITATIONS.md)**
 - Audit trail: [`docs/REVIEW_2026-09-08.md`](docs/REVIEW_2026-09-08.md) ·
@@ -273,6 +274,79 @@ it.
 **So the lever for `ai_edited` is resolution and a mask head, not a bigger
 backbone**, and the masks are already downloaded.
 
+### Resolution and a mask head: 0.7328
+
+Same frozen DINOv2 ViT-S, but at 448px with a four-block decoder that predicts
+the edit mask alongside the class, trained on 4,500 images per class with the
+class-weighted loss and evaluated on a balanced 4,050-image split. Balanced
+accuracy goes from 0.6593 to **0.7328**, almost all of it from `ai_edited`, which
+is the class the resize was destroying. That was the expected direction, and it
+was also as far as DINOv2 went. Six more levers were then tried and each was
+measured rather than assumed:
+
+| lever | result |
+|---|---|
+| encoder capacity, S to L | p = 1.000, indistinguishable |
+| epochs | converges by epoch 3 to 4; longer runs do not help |
+| training data volume | no change |
+| decision rule (threshold sweep) | +0.0002 |
+| resolution 448 to 672 | within noise |
+| class balance, real tripled | -0.0036 prior-corrected |
+
+### The encoder was the bottleneck: 0.8040
+
+Swapping DINOv2 for CLIP ViT-B/16 with everything else fixed gives the one large
+jump in the project. CLIP's positional embeddings are learned for 224px, so
+running at 448 means resampling them bicubically from a 14x14 to a 28x28 grid;
+with that done the model reaches **0.8040** on the identical 4,050 test images
+the DINOv2 mask head was scored on (paired McNemar p = 2.02e-16). Per class: real
+F1 0.727, `ai_generated` 0.961, `ai_edited` 0.722. That last number is the same
+class that sat at 0.465 on the probe.
+
+Why this matters more than the number: five of the six eliminated levers were
+about scale, and none of them moved anything. The representation did. A detector
+built on features trained to match images to text transfers to this task better
+than one trained on self-supervised image structure, which is the same
+conclusion the OpenSDI paper reaches with its own MaskCLIP design.
+
+Against the paper's published benchmark on the same generator, collapsed to
+their binary task: ours 0.795 to 0.809 against their 0.927 for MaskCLIP, above
+their IML-ViT baseline at 0.757, on 7 percent of their training images with a
+frozen encoder. Localisation is the honest weak point, mask IoU 0.272 against
+their 0.671, and the DINOv2 head that classifies 7 points worse localises better
+at 0.385, so the final model trades IoU for classification. The full comparison, including what is and is not comparable, is in
+[`docs/BENCHMARK_COMPARISON.md`](docs/BENCHMARK_COMPARISON.md).
+
+### What transfers, measured on the final model
+
+Leave-one-generator-out on the OpenSDI test set, CLIP and DINOv2 mask heads
+trained on the identical sd15 data:
+
+| generator | class | DINOv2 | CLIP |
+|---|---|---|---|
+| sd15 (control) | `ai_edited` | 0.670 | 0.715 |
+| sd2 | `real` | 0.730 | 0.930 |
+| sd2 | `ai_generated` | 0.875 | 0.820 |
+| sd3 | `ai_generated` | 0.705 | 0.660 |
+| sd3 | `ai_edited` | 0.583 | 0.765 |
+| sdxl | `ai_generated` | 0.672 | 0.635 |
+| sdxl | `ai_edited` | 0.550 | 0.690 |
+| flux | `ai_generated` | 0.565 | 0.647 |
+| flux | `ai_edited` | 0.505 | 0.642 |
+
+Mean held-out recall 0.723 against 0.651. CLIP transfers `ai_edited` far better
+on every unseen generator, and its few-point deficit on `ai_generated` for the SD
+family is the other side of DINOv2 calling 27 percent of real images generated:
+a threshold difference, not a representation one.
+
+Localisation is where transfer collapses, for both encoders and for the paper's
+own model. Mask IoU on the CLIP head falls 36 percent from sd15 to flux while
+classification falls 10 percent; on DINOv2 the figures are 69 and 25 percent;
+the paper reports 76 and 26 percent for MaskCLIP. A detector on an unfamiliar
+generator still notices something is wrong while losing track of where. That
+asymmetry reproducing independently across three implementations is the most
+useful thing this project measured.
+
 <!-- ✍️  YOUR WORDS: what you take from the rebuild. -->
 
 ### Reproducing this
@@ -284,10 +358,17 @@ venv-linux/bin/python dataset_builder/tools/convert_opensdi.py
 # confirm the shortcut is absent before training on it
 venv-linux/bin/python scripts/data/metadata_confound.py data_sources/opensdi
 
-# train and evaluate
+# linear probe baseline and its evaluations
 venv-linux/bin/python scripts/training/train_linear_probe.py
 venv-linux/bin/python scripts/evaluation/degradation_test.py
 venv-linux/bin/python scripts/evaluation/heldout_generator_test.py
+
+# the final model: CLIP ViT-B/16 mask head at 448px on balanced data
+venv-linux/bin/python scripts/training/train_mask_head.py \
+    --encoder clip:ViT_B_16 --size 448 --data_dir data_sources/opensdi_large --mask_dir data_sources/opensdi_large_masks \
+    --max-per-class 4500 --class-weights --out results/mask_head_clip448_balanced
+venv-linux/bin/python scripts/evaluation/mask_head_generalisation.py \
+    --checkpoint results/mask_head_clip448_balanced/best_model.pth
 ```
 
 ---

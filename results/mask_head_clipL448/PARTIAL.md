@@ -52,3 +52,17 @@ Four epochs would take roughly 5.7 hours and would likely capture the peak, sinc
 every run in this project converges by epoch 3 and best epochs land between 7 and
 12. Reducing the per-epoch evaluation, currently a full pass over 6,353 test
 images every epoch, would cut that further.
+
+## Postscript, 2026-09-11: the direction is less established than claimed above
+
+The comparison above holds B/16 at 0.237 fixed. Since then the same B/16 @448
+model retrained on balanced data (`mask_head_clip448_balanced/`) reached IoU
+0.272 on the 28x28 grid, above this run's 0.2546 on 32x32, and the DINOv2 head
+on the same balanced data reached 0.385. The training mix therefore moves IoU
+by more than the grid change did here, and the two runs being compared above
+were both trained on the real-tripled mix while the later ones were not. The
+one-epoch number is still a fair pair against B/16 real-tripled (0.2546 against
+0.237), but "grid resolution helps localisation independently of feature
+quality" should be read as "consistent with", not "established". Separating grid
+from capacity from training mix would need the run this file says is not worth
+the GPU time.

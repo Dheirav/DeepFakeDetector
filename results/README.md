@@ -64,3 +64,32 @@ These files should be regenerated once the loader is fixed, or deleted.
 | `ablation_study.md` | ablation summary | **corrected 2026-09-08** — see its banner |
 
 Full evidence: [`../docs/REVIEW_2026-09-08.md`](../docs/REVIEW_2026-09-08.md).
+
+## Rebuild runs (OpenSDI, verified-clean data)
+
+Everything below is a frozen encoder plus a small trained head, on the OpenSDI
+slice. Accuracy is 3-class balanced accuracy on the run's own test split; where
+the split was 58% real (the "real tripled" runs) the balanced figure is
+prior-corrected. IoU is mean mask IoU over the 1,350 `ai_edited` test images.
+Each directory holds `training_summary.json` with per-epoch history, `y_true`,
+`y_pred`, `probs.npy`, and `best_model.pth` (except `mask_head_clipL448`, whose
+one-epoch checkpoint is deliberately not committed).
+
+| Path | Encoder | Data | Accuracy | IoU | What it answered |
+|---|---|---|---|---|---|
+| `linear_probe/` | DINOv2 S/B/L, CLIP B/32 @224 | 3,600 | 0.6593 (S) | - | first honest number; encoder capacity is not the bottleneck (S vs L p = 1.000) |
+| `mask_head/` | DINOv2 S @448 | 3,600 | 0.7250 | 0.235 | resolution plus a mask head recovers `ai_edited` |
+| `mask_head_large/` | DINOv2 S @448 | 13,500 | 0.7331 | 0.383 | data volume: 3.75x more images, no change |
+| `mask_head_weighted/` | DINOv2 S @448 | 13,500 | 0.7328 | 0.385 | class-weighted loss; the DINOv2 reference for paired tests |
+| `mask_head_672/` | DINOv2 S @672 | 13,500 | 0.7286 | 0.381 | resolution beyond 448: nothing |
+| `mask_head_morereal/` | DINOv2 S @448 | 21,175 | 0.7292 corr. | 0.277 | real tripled: shifts the prior, teaches nothing |
+| `mask_head_clip/` | CLIP B/16 @224 | 21,175 | 0.7835 corr. | 0.176 | the encoder was the bottleneck: +10 points |
+| `mask_head_clip448/` | CLIP B/16 @448, interpolated pos. emb. | 21,175 | 0.7969 corr. | 0.237 | features and grid stack |
+| `mask_head_clipL448/` | CLIP L/14 @448 | 21,175 | partial | 0.254 (1 epoch) | stopped: 2+ hours per epoch under thermal throttling; see `PARTIAL.md` |
+| **`mask_head_clip448_balanced/`** | CLIP B/16 @448 | 13,500 | **0.8040** | 0.272 | **final model**; paired with `mask_head_weighted` (p = 2.02e-16); `heldout_generators.json` is the cross-generator result |
+
+`heldout_generators.json` and `heldout_probs_*.npy` in a directory are the
+leave-one-generator-out evaluation of that checkpoint on `data_sources/heldout`.
+The version in `mask_head_clip448/` is confounded by that run's real-heavy prior
+and should not be compared against `mask_head_weighted/` on raw recall; use
+`mask_head_clip448_balanced/` for that comparison.
