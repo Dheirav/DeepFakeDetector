@@ -136,6 +136,11 @@ def main():
     ap.add_argument("--encoder", default="dinov2_vits14")
     ap.add_argument("--size", type=int, default=448, help="must be a multiple of 14")
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--max-per-class", type=int, default=None,
+                    help="cap each class at this many images, taken in sorted "
+                         "filename order so the subset is reproducible. Lets one "
+                         "directory serve both balanced and imbalanced experiments "
+                         "without deleting files.")
     ap.add_argument("--workers", type=int, default=2,
                     help="DataLoader workers. Each forks the parent, which for a "
                          "CUDA-initialised process is expensive in RAM; use 0 on a "
@@ -169,7 +174,10 @@ def main():
     files, labels = [], []
     for ci, cls in enumerate(CLASSES):
         d = os.path.join(args.data_dir, cls)
-        for f in sorted(os.listdir(d)):
+        names = sorted(os.listdir(d))
+        if args.max_per_class:
+            names = names[:args.max_per_class]
+        for f in names:
             files.append(os.path.join(d, f)); labels.append(ci)
     files, labels = np.array(files), np.array(labels)
     tr, te = train_test_split(np.arange(len(labels)), test_size=args.test_size,
