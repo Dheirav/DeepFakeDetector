@@ -61,6 +61,73 @@ def build_decoder(dim):
     return Decoder(dim)
 
 
+def build_encoder(name, size, device):
+    """Load a frozen encoder and return ``(encoder, features, dim, grid)``.
+
+    ``features(x)`` maps a batch to ``(patch_feature_map, cls_token)``. Shared by
+    training and evaluation so the CLIP token extraction and positional-embedding
+    interpolation exist in exactly one place; a second copy is how the original
+    codebase ended up with three model builders that disagreed.
+    """
+    import torch
+    import torch.nn.functional as F
+    is_clip = name.startswith("clip:")
+    if is_clip:
+        # CLIP has no forward_features, so the visual tower is run manually to
+        # reach the patch tokens before pooling. It also loads in fp16 on CUDA,
+        # which will not mix with fp32 inputs, hence .float().
+        enc, _ = torch.hub.load("openai/CLIP", name.split(":", 1)[1],
+                                trust_repo=True)
+        enc = enc.float().eval().to(device)
+        vis = enc.visual
+        patch = vis.conv1.kernel_size[0]
+        dim = vis.conv1.out_channels
+        native = vis.input_resolution // patch
+        grid = size // patch
+        assert size % patch == 0, f"size must be a multiple of the {patch}px patch"
+
+        # CLIP's positional embeddings are learned for a fixed input resolution,
+        # so running at any other size needs them resampled. Without this the
+        # encoder is locked to 224px and a 14x14 grid, which cost 36% of mask IoU
+        # against DINOv2's 32x32 at 448px: better features, far coarser grid.
+        # Bicubic on the 2D grid is the standard treatment. The class token's
+        # embedding is positionless and is carried across untouched.
+        pe = vis.positional_embedding
+        if grid != native:
+            cls_pe, patch_pe = pe[:1], pe[1:]
+            patch_pe = patch_pe.reshape(1, native, native, dim).permute(0, 3, 1, 2)
+            patch_pe = F.interpolate(patch_pe, size=(grid, grid), mode="bicubic",
+                                     align_corners=False)
+            patch_pe = patch_pe.permute(0, 2, 3, 1).reshape(grid * grid, dim)
+            pe = torch.cat([cls_pe, patch_pe], dim=0)
+            print(f"  interpolated CLIP positional embeddings "
+                  f"{native}x{native} -> {grid}x{grid}")
+        pe = pe.to(device)
+
+        def features(x):
+            z = vis.conv1(x).reshape(x.size(0), dim, -1).permute(0, 2, 1)
+            cls = vis.class_embedding + torch.zeros(x.size(0), 1, z.size(-1),
+                                                    dtype=z.dtype, device=z.device)
+            z = torch.cat([cls, z], dim=1) + pe
+            z = vis.ln_post(vis.transformer(vis.ln_pre(z).permute(1, 0, 2)).permute(1, 0, 2))
+            fmap = z[:, 1:, :].transpose(1, 2).reshape(x.size(0), dim, grid, grid)
+            return fmap, z[:, 0, :]
+    else:
+        enc = torch.hub.load("facebookresearch/dinov2", name, verbose=False)
+        enc.eval().to(device)
+        dim = enc.embed_dim
+        grid = size // 14
+
+        def features(x):
+            out = enc.forward_features(x)
+            fmap = out["x_norm_patchtokens"].transpose(1, 2).reshape(
+                x.size(0), dim, grid, grid)
+            return fmap, out["x_norm_clstoken"]
+    for p in enc.parameters():
+        p.requires_grad = False
+    return enc, features, dim, grid
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -133,61 +200,7 @@ def main():
 
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    is_clip = args.encoder.startswith("clip:")
-    if is_clip:
-        # CLIP has no forward_features, so the visual tower is run manually to
-        # reach the patch tokens before pooling. It also loads in fp16 on CUDA,
-        # which will not mix with fp32 inputs, hence .float().
-        enc, _ = torch.hub.load("openai/CLIP", args.encoder.split(":", 1)[1],
-                                trust_repo=True)
-        enc = enc.float().eval().to(device)
-        vis = enc.visual
-        patch = vis.conv1.kernel_size[0]
-        dim = vis.conv1.out_channels
-        native = vis.input_resolution // patch
-        grid = args.size // patch
-        assert args.size % patch == 0, f"size must be a multiple of the {patch}px patch"
-
-        # CLIP's positional embeddings are learned for a fixed input resolution,
-        # so running at any other size needs them resampled. Without this the
-        # encoder is locked to 224px and a 14x14 grid, which cost 36% of mask IoU
-        # against DINOv2's 32x32 at 448px: better features, far coarser grid.
-        # Bicubic on the 2D grid is the standard treatment. The class token's
-        # embedding is positionless and is carried across untouched.
-        pe = vis.positional_embedding
-        if grid != native:
-            cls_pe, patch_pe = pe[:1], pe[1:]
-            patch_pe = patch_pe.reshape(1, native, native, dim).permute(0, 3, 1, 2)
-            patch_pe = F.interpolate(patch_pe, size=(grid, grid), mode="bicubic",
-                                     align_corners=False)
-            patch_pe = patch_pe.permute(0, 2, 3, 1).reshape(grid * grid, dim)
-            pe = torch.cat([cls_pe, patch_pe], dim=0)
-            print(f"  interpolated CLIP positional embeddings "
-                  f"{native}x{native} -> {grid}x{grid}")
-        pe = pe.to(device)
-
-        def features(x):
-            z = vis.conv1(x).reshape(x.size(0), dim, -1).permute(0, 2, 1)
-            cls = vis.class_embedding + torch.zeros(x.size(0), 1, z.size(-1),
-                                                    dtype=z.dtype, device=z.device)
-            z = torch.cat([cls, z], dim=1) + pe
-            z = vis.ln_post(vis.transformer(vis.ln_pre(z).permute(1, 0, 2)).permute(1, 0, 2))
-            fmap = z[:, 1:, :].transpose(1, 2).reshape(x.size(0), dim, grid, grid)
-            return fmap, z[:, 0, :]
-    else:
-        enc = torch.hub.load("facebookresearch/dinov2", args.encoder, verbose=False)
-        enc.eval().to(device)
-        dim = enc.embed_dim
-        grid = args.size // 14
-
-        def features(x):
-            out = enc.forward_features(x)
-            fmap = out["x_norm_patchtokens"].transpose(1, 2).reshape(
-                x.size(0), dim, grid, grid)
-            return fmap, out["x_norm_clstoken"]
-
-    for p in enc.parameters():
-        p.requires_grad = False
+    enc, features, dim, grid = build_encoder(args.encoder, args.size, device)
     print(f"  {args.encoder} @ {args.size}px -> {grid}x{grid} grid, {dim}-dim")
 
     cw = (torch.tensor(args.class_weights, dtype=torch.float32).to(device)

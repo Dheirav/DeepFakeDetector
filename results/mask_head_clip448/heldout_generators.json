@@ -1,0 +1,102 @@
+{
+  "flux": {
+    "ai_generated": {
+      "n": 400,
+      "recall": 0.325,
+      "mask_iou": NaN,
+      "pred_dist": [
+        264,
+        130,
+        6
+      ]
+    },
+    "ai_edited": {
+      "n": 400,
+      "recall": 0.2775,
+      "mask_iou": 0.11668735047718602,
+      "pred_dist": [
+        277,
+        12,
+        111
+      ]
+    }
+  },
+  "sd15": {
+    "ai_edited": {
+      "n": 400,
+      "recall": 0.4425,
+      "mask_iou": 0.20091191511033965,
+      "pred_dist": [
+        214,
+        9,
+        177
+      ]
+    }
+  },
+  "sd2": {
+    "real": {
+      "n": 400,
+      "recall": 0.9775,
+      "mask_iou": NaN,
+      "pred_dist": [
+        391,
+        6,
+        3
+      ]
+    },
+    "ai_generated": {
+      "n": 400,
+      "recall": 0.7425,
+      "mask_iou": NaN,
+      "pred_dist": [
+        89,
+        297,
+        14
+      ]
+    }
+  },
+  "sd3": {
+    "ai_generated": {
+      "n": 400,
+      "recall": 0.4525,
+      "mask_iou": NaN,
+      "pred_dist": [
+        206,
+        181,
+        13
+      ]
+    },
+    "ai_edited": {
+      "n": 400,
+      "recall": 0.415,
+      "mask_iou": 0.19227564498417757,
+      "pred_dist": [
+        231,
+        3,
+        166
+      ]
+    }
+  },
+  "sdxl": {
+    "ai_generated": {
+      "n": 400,
+      "recall": 0.385,
+      "mask_iou": NaN,
+      "pred_dist": [
+        211,
+        154,
+        35
+      ]
+    },
+    "ai_edited": {
+      "n": 400,
+      "recall": 0.3575,
+      "mask_iou": 0.1146891101016974,
+      "pred_dist": [
+        253,
+        4,
+        143
+      ]
+    }
+  }
+}

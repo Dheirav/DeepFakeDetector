@@ -26,26 +26,28 @@ EDITED = 2
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--checkpoint", default="results/mask_head_weighted/best_model.pth")
+    ap.add_argument("--checkpoint", default="results/mask_head_clip448/best_model.pth")
     ap.add_argument("--root", default="data_sources/heldout")
     ap.add_argument("--control", default="sd15", help="generator seen during training")
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--out", default="results/mask_head_weighted/heldout_generators.json")
+    ap.add_argument("--out", default=None, help="defaults to <checkpoint dir>/heldout_generators.json")
     args = ap.parse_args()
+    if args.out is None:
+        args.out = os.path.join(os.path.dirname(args.checkpoint), "heldout_generators.json")
 
     import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
     from PIL import Image
     from torchvision import transforms
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))))
-    from training.train_mask_head import build_decoder
+    from training.train_mask_head import build_decoder, build_encoder
 
     ck = torch.load(args.checkpoint, map_location="cpu")
     size, encoder_name = ck["size"], ck["encoder"]
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    enc = torch.hub.load("facebookresearch/dinov2", encoder_name, verbose=False)
-    enc.eval().to(device)
-    dim, grid = enc.embed_dim, size // 14
+    # Same builder the training script uses, so a CLIP checkpoint gets the same
+    # token extraction and positional-embedding interpolation it was trained with.
+    enc, features, dim, grid = build_encoder(encoder_name, size, device)
 
     dec = build_decoder(dim).to(device); dec.load_state_dict(ck["decoder"]); dec.eval()
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
@@ -55,7 +57,7 @@ def main():
     norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
     def run(paths, mask_dir):
-        preds, ious = [], []
+        preds, ious, probs = [], [], []
         for i in range(0, len(paths), args.batch):
             chunk = paths[i:i + args.batch]
             xs = []
@@ -64,16 +66,20 @@ def main():
                 xs.append(norm(transforms.functional.to_tensor(im)))
             x = torch.stack(xs).to(device)
             with torch.no_grad():
-                out = enc.forward_features(x)
-                fmap = out["x_norm_patchtokens"].transpose(1, 2).reshape(
-                    x.size(0), dim, grid, grid)
+                fmap, cls = features(x)
                 up = F.interpolate(dec(fmap), size=(size, size), mode="bilinear",
                                    align_corners=False).squeeze(1)
                 prob = torch.sigmoid(up)
                 summary = torch.stack([prob.mean((1, 2)), prob.amax((1, 2)),
                                        (prob > 0.5).float().mean((1, 2))], dim=1)
-                preds += clf(torch.cat([out["x_norm_clstoken"], summary], 1)) \
-                             .argmax(1).cpu().tolist()
+                logits = clf(torch.cat([cls, summary], 1))
+                # Save probabilities, not only argmax. A model trained on an
+                # imbalanced class mix carries a prior that depresses minority
+                # recall, and comparing two such models on raw argmax conflates
+                # their priors with their features. Probabilities let the
+                # comparison be prior-corrected after the fact.
+                probs.append(F.softmax(logits, dim=1).cpu().numpy())
+                preds += logits.argmax(1).cpu().tolist()
             if mask_dir:
                 for k, p in enumerate(chunk):
                     mp = os.path.join(mask_dir,
@@ -85,7 +91,7 @@ def main():
                     pr = (prob[k] > 0.5).float()
                     union = ((pr + t) > 0).float().sum().item()
                     ious.append((pr * t).sum().item() / union if union else 0.0)
-        return np.array(preds), ious
+        return np.array(preds), ious, np.concatenate(probs)
 
     results = {}
     gens = sorted(d for d in os.listdir(args.root)
@@ -103,7 +109,9 @@ def main():
             md = os.path.join(args.root, g + "_masks") if ci == EDITED else None
             if md and not os.path.isdir(md):
                 md = None
-            pred, ious = run(paths, md)
+            pred, ious, prob = run(paths, md)
+            np.save(os.path.join(os.path.dirname(args.out),
+                                 f"heldout_probs_{g}_{cls}.npy"), prob)
             rec = float((pred == ci).mean())
             miou = float(np.mean(ious)) if ious else float("nan")
             dist = np.bincount(pred, minlength=3).tolist()
