@@ -1,0 +1,22 @@
+Using cache found in /home/dheirav/.cache/torch/hub/openai_CLIP_main
+  interpolated CLIP positional embeddings 14x14 -> 28x28
+  unfroze last 4 of 12 blocks + final norm: 28.4M params
+  loaded 50 fine-tuned encoder tensors
+  clip:ViT_B_16 @ 448px, checkpoint from epoch 4
+
+  generator class               n   recall     IoU   predicted as
+  flux      ai_generated      400    0.240       -   real=267 gen=96 edit=37
+  flux      ai_edited         400    0.657   0.141   real=123 gen=14 edit=263
+
+  sd15      ai_edited         400    0.853   0.375   real=52 gen=7 edit=341  (control)
+
+  sd2       real              400    0.965       -   real=386 gen=2 edit=12
+  sd2       ai_generated      400    0.850       -   real=30 gen=340 edit=30
+
+  sd3       ai_generated      400    0.505       -   real=122 gen=202 edit=76
+  sd3       ai_edited         400    0.797   0.270   real=76 gen=5 edit=319
+
+  sdxl      ai_generated      400    0.328       -   real=91 gen=131 edit=178
+  sdxl      ai_edited         400    0.718   0.203   real=106 gen=7 edit=287
+
+  saved -> results/mask_head_clip448_ft4/heldout_generators.json

@@ -1,0 +1,75 @@
+Using cache found in /home/dheirav/.cache/torch/hub/openai_CLIP_main
+  13500 images  train 9450  test 4050
+  interpolated CLIP positional embeddings 14x14 -> 28x28
+  unfroze last 4 of 12 blocks + final norm: 28.4M params
+  clip:ViT_B_16 @ 448px -> 28x28 grid, 768-dim
+  class weights: [1.5, 1.0, 1.0]
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   1/10  loss 1.5005  acc 0.8758  ai_edited F1 0.8182  IoU 0.3826  <- best
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   2/10  loss 1.1395  acc 0.8904  ai_edited F1 0.8489  IoU 0.4239  <- best
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   3/10  loss 0.8638  acc 0.8565  ai_edited F1 0.7532  IoU 0.3893
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   4/10  loss 0.5780  acc 0.9015  ai_edited F1 0.8552  IoU 0.4014  <- best
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   5/10  loss 0.4566  acc 0.8837  ai_edited F1 0.8175  IoU 0.4028
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   6/10  loss 0.3755  acc 0.8914  ai_edited F1 0.8448  IoU 0.4073
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   7/10  loss 0.4407  acc 0.8728  ai_edited F1 0.8000  IoU 0.3827
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   8/10  loss 0.3580  acc 0.8496  ai_edited F1 0.8156  IoU 0.4357
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch   9/10  loss 0.3388  acc 0.8770  ai_edited F1 0.7993  IoU 0.3755
+    batch 200/1182
+    batch 400/1182
+    batch 600/1182
+    batch 800/1182
+    batch 1000/1182
+  epoch  10/10  loss 0.2672  acc 0.8985  ai_edited F1 0.8518  IoU 0.3954
+
+  best epoch: 4/10
+
+  accuracy 0.9015
+    real           F1 0.8582
+    ai_generated   F1 0.9904
+    ai_edited      F1 0.8552
+  ai_edited mask IoU (n=1350): 0.4014
+  saved -> results/mask_head_clip448_ft4
