@@ -1,0 +1,89 @@
+{
+  "encoder": "clip:ViT_B_16",
+  "size": 448,
+  "epochs": 10,
+  "accuracy": 0.9014814814814814,
+  "f1": {
+    "real": 0.8582089552238806,
+    "ai_generated": 0.9904129793510325,
+    "ai_edited": 0.8552437223042836
+  },
+  "ai_edited_mask_iou": 0.40137884999228896,
+  "n_masks_scored": 1350,
+  "best_epoch": 4,
+  "history": [
+    {
+      "epoch": 1,
+      "loss": 1.50052855113196,
+      "accuracy": 0.8758024691358025,
+      "ai_edited_f1": 0.8181818181818182,
+      "mask_iou": 0.3825604011841851
+    },
+    {
+      "epoch": 2,
+      "loss": 1.1395372832010662,
+      "accuracy": 0.8903703703703704,
+      "ai_edited_f1": 0.8488656195462478,
+      "mask_iou": 0.42389873943550843
+    },
+    {
+      "epoch": 3,
+      "loss": 0.8638032026092212,
+      "accuracy": 0.8565432098765432,
+      "ai_edited_f1": 0.7532008830022076,
+      "mask_iou": 0.3893058723684348
+    },
+    {
+      "epoch": 4,
+      "loss": 0.5780203534484589,
+      "accuracy": 0.9014814814814814,
+      "ai_edited_f1": 0.8552437223042836,
+      "mask_iou": 0.40137884999228896
+    },
+    {
+      "epoch": 5,
+      "loss": 0.4566308987356486,
+      "accuracy": 0.8837037037037037,
+      "ai_edited_f1": 0.8175355450236966,
+      "mask_iou": 0.40275207941201424
+    },
+    {
+      "epoch": 6,
+      "loss": 0.3755125560235801,
+      "accuracy": 0.891358024691358,
+      "ai_edited_f1": 0.8448398576512456,
+      "mask_iou": 0.40725029983608524
+    },
+    {
+      "epoch": 7,
+      "loss": 0.44069110445084453,
+      "accuracy": 0.8728395061728395,
+      "ai_edited_f1": 0.8,
+      "mask_iou": 0.3826502393888144
+    },
+    {
+      "epoch": 8,
+      "loss": 0.35802020782558003,
+      "accuracy": 0.8496296296296296,
+      "ai_edited_f1": 0.815576323987539,
+      "mask_iou": 0.43567560935462457
+    },
+    {
+      "epoch": 9,
+      "loss": 0.33883553207121114,
+      "accuracy": 0.8770370370370371,
+      "ai_edited_f1": 0.799338022341746,
+      "mask_iou": 0.37554489706074107
+    },
+    {
+      "epoch": 10,
+      "loss": 0.26716852712639605,
+      "accuracy": 0.8985185185185185,
+      "ai_edited_f1": 0.8517699115044248,
+      "mask_iou": 0.39543576326355595
+    }
+  ],
+  "unfreeze": 4,
+  "enc_lr_scale": 0.1,
+  "note": "last 4 encoder blocks trained at 0.1x lr; decoder and classifier trained; reported figures are from the best epoch by accuracy"
+}

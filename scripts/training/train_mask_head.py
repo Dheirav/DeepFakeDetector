@@ -61,13 +61,19 @@ def build_decoder(dim):
     return Decoder(dim)
 
 
-def build_encoder(name, size, device):
-    """Load a frozen encoder and return ``(encoder, features, dim, grid)``.
+def build_encoder(name, size, device, unfreeze=0):
+    """Load an encoder and return ``(encoder, features, dim, grid)``.
 
     ``features(x)`` maps a batch to ``(patch_feature_map, cls_token)``. Shared by
     training and evaluation so the CLIP token extraction and positional-embedding
     interpolation exist in exactly one place; a second copy is how the original
     codebase ended up with three model builders that disagreed.
+
+    ``unfreeze`` leaves the last that many transformer blocks, and the final
+    norm, trainable; everything before them stays frozen. Zero is the frozen
+    encoder every earlier run used. The trainable parameters are exposed as
+    ``encoder.trainable_params`` so the caller can give them their own learning
+    rate, and ``encoder.trainable_keys`` names them for checkpointing.
     """
     import torch
     import torch.nn.functional as F
@@ -102,7 +108,11 @@ def build_encoder(name, size, device):
             pe = torch.cat([cls_pe, patch_pe], dim=0)
             print(f"  interpolated CLIP positional embeddings "
                   f"{native}x{native} -> {grid}x{grid}")
-        pe = pe.to(device)
+        # Detached because a partially unfrozen encoder runs features() with
+        # grad enabled, and pe was derived from positional_embedding through
+        # an interpolate whose graph would otherwise be walked on every
+        # backward and freed after the first.
+        pe = pe.detach().to(device)
 
         def features(x):
             z = vis.conv1(x).reshape(x.size(0), dim, -1).permute(0, 2, 1)
@@ -125,6 +135,20 @@ def build_encoder(name, size, device):
             return fmap, out["x_norm_clstoken"]
     for p in enc.parameters():
         p.requires_grad = False
+    if is_clip:
+        blocks, final_norm = enc.visual.transformer.resblocks, enc.visual.ln_post
+    else:
+        blocks, final_norm = enc.blocks, enc.norm
+    tail = list(blocks[len(blocks) - unfreeze:]) + [final_norm] if unfreeze else []
+    for mod in tail:
+        for p in mod.parameters():
+            p.requires_grad = True
+    named = [(n, p) for n, p in enc.named_parameters() if p.requires_grad]
+    enc.trainable_params = [p for _, p in named]
+    enc.trainable_keys = [n for n, _ in named]
+    if unfreeze:
+        print(f"  unfroze last {unfreeze} of {len(blocks)} blocks + final norm: "
+              f"{sum(p.numel() for p in enc.trainable_params)/1e6:.1f}M params")
     return enc, features, dim, grid
 
 
@@ -150,6 +174,15 @@ def main():
     ap.add_argument("--test-size", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out", default="results/mask_head")
+    ap.add_argument("--unfreeze", type=int, default=0,
+                    help="train the last N encoder blocks. Every eliminated lever "
+                         "so far was around a frozen encoder; this is the one the "
+                         "OpenSDI paper's own method differs on. It also reopens "
+                         "the door to learning generator fingerprints, so the "
+                         "cross-generator eval is the result, not the in-domain "
+                         "number.")
+    ap.add_argument("--enc-lr-scale", type=float, default=0.1,
+                    help="encoder learning rate as a fraction of --lr")
     ap.add_argument("--class-weights", type=float, nargs=3, default=None,
                     metavar=("W_REAL", "W_GEN", "W_EDIT"),
                     help="per-class loss weights. Scaling the data made the "
@@ -208,7 +241,8 @@ def main():
 
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    enc, features, dim, grid = build_encoder(args.encoder, args.size, device)
+    enc, features, dim, grid = build_encoder(args.encoder, args.size, device,
+                                             unfreeze=args.unfreeze)
     print(f"  {args.encoder} @ {args.size}px -> {grid}x{grid} grid, {dim}-dim")
 
     cw = (torch.tensor(args.class_weights, dtype=torch.float32).to(device)
@@ -225,7 +259,10 @@ def main():
     dec = build_decoder(dim).to(device)
     # classifier sees the pooled encoder token plus what the mask says
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
-    opt = torch.optim.AdamW(list(dec.parameters()) + list(clf.parameters()), lr=args.lr)
+    groups = [{"params": list(dec.parameters()) + list(clf.parameters()), "lr": args.lr}]
+    if enc.trainable_params:
+        groups.append({"params": enc.trainable_params, "lr": args.lr * args.enc_lr_scale})
+    opt = torch.optim.AdamW(groups)
 
     def dice_bce(logit, target, valid):
         if valid.sum() == 0:
@@ -269,9 +306,13 @@ def main():
     history, best = [], {"accuracy": -1.0}
     for ep in range(args.epochs):
         dec.train(); clf.train(); tot = 0.0
-        for x, y, m, v in dl_tr:
+        for bi, (x, y, m, v) in enumerate(dl_tr):
             x, y, m, v = x.to(device), y.to(device), m.to(device), v.to(device)
-            with torch.no_grad():
+            # Autograd only records from the first tensor that requires grad,
+            # so with a partly unfrozen encoder the frozen prefix still costs
+            # no activation memory. The encoder stays in eval mode either way:
+            # neither backbone has dropout or batch statistics to switch.
+            with torch.set_grad_enabled(args.unfreeze > 0):
                 fmap, cls = features(x)
             logit = dec(fmap).squeeze(1)
             up = F.interpolate(logit.unsqueeze(1), size=(args.size, args.size),
@@ -282,6 +323,8 @@ def main():
             loss = dice_bce(up, m, v) + F.cross_entropy(clf(torch.cat([cls, summary], 1)), y, weight=cw)
             opt.zero_grad(); loss.backward(); opt.step()
             tot += loss.item() * x.size(0)
+            if (bi + 1) % 200 == 0:
+                print(f"    batch {bi+1}/{len(dl_tr)}", flush=True)
         # Evaluate every epoch. 'Loss still falling' does not imply accuracy is
         # still improving, and the difference decides whether to train longer.
         trues, preds, miou, probs = evaluate()
@@ -296,10 +339,14 @@ def main():
                     "probs": probs}
             # Keep the weights of the best epoch, not the last, so threshold
             # work later needs no retraining.
-            torch.save({"decoder": dec.state_dict(), "classifier": clf.state_dict(),
-                        "encoder": args.encoder, "size": args.size,
-                        "epoch": ep + 1},
-                       os.path.join(args.out, "best_model.pth"))
+            ck = {"decoder": dec.state_dict(), "classifier": clf.state_dict(),
+                  "encoder": args.encoder, "size": args.size, "epoch": ep + 1,
+                  "unfreeze": args.unfreeze}
+            if enc.trainable_keys:
+                # Only the tensors that moved; the rest reload from torch.hub.
+                sd = enc.state_dict()
+                ck["encoder_state"] = {k: sd[k].cpu() for k in enc.trainable_keys}
+            torch.save(ck, os.path.join(args.out, "best_model.pth"))
             star = "  <- best"
         print(f"  epoch {ep+1:>3}/{args.epochs}  loss {tot/len(tr):.4f}  "
               f"acc {acc:.4f}  ai_edited F1 {f1e:.4f}  IoU {miou:.4f}{star}", flush=True)
@@ -320,7 +367,11 @@ def main():
                "accuracy": acc, "f1": {c: float(v) for c, v in zip(CLASSES, f1)},
                "ai_edited_mask_iou": miou, "n_masks_scored": int((trues == EDITED).sum()),
                "best_epoch": best["epoch"], "history": history,
-               "note": "frozen encoder; decoder and classifier trained; "
+               "unfreeze": args.unfreeze, "enc_lr_scale": args.enc_lr_scale,
+               "note": ("frozen encoder; " if not args.unfreeze else
+                        f"last {args.unfreeze} encoder blocks trained at "
+                        f"{args.enc_lr_scale}x lr; ")
+                       + "decoder and classifier trained; "
                        "reported figures are from the best epoch by accuracy"},
               open(os.path.join(args.out, "training_summary.json"), "w"), indent=2)
     print(f"  saved -> {args.out}")

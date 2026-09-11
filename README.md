@@ -366,7 +366,8 @@ venv-linux/bin/python scripts/evaluation/heldout_generator_test.py
 # the final model: CLIP ViT-B/16 mask head at 448px on balanced data
 venv-linux/bin/python scripts/training/train_mask_head.py \
     --encoder clip:ViT_B_16 --size 448 --data_dir data_sources/opensdi_large --mask_dir data_sources/opensdi_large_masks \
-    --max-per-class 4500 --class-weights --out results/mask_head_clip448_balanced
+    --max-per-class 4500 --epochs 10 --batch 8 --class-weights 1.5 1.0 1.0 \
+    --out results/mask_head_clip448_balanced
 venv-linux/bin/python scripts/evaluation/mask_head_generalisation.py \
     --checkpoint results/mask_head_clip448_balanced/best_model.pth
 ```

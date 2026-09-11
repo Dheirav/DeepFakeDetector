@@ -47,7 +47,16 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Same builder the training script uses, so a CLIP checkpoint gets the same
     # token extraction and positional-embedding interpolation it was trained with.
-    enc, features, dim, grid = build_encoder(encoder_name, size, device)
+    enc, features, dim, grid = build_encoder(encoder_name, size, device,
+                                             unfreeze=ck.get("unfreeze", 0))
+    if ck.get("encoder_state"):
+        # A partly fine-tuned encoder: the checkpoint carries only the tensors
+        # that trained, so missing keys are expected and unexpected ones are not.
+        res = enc.load_state_dict(ck["encoder_state"], strict=False)
+        assert not res.unexpected_keys, res.unexpected_keys
+        assert set(ck["encoder_state"]) == set(enc.trainable_keys), "checkpoint tail != built tail"
+        print(f"  loaded {len(ck['encoder_state'])} fine-tuned encoder tensors")
+    enc.eval()
 
     dec = build_decoder(dim).to(device); dec.load_state_dict(ck["decoder"]); dec.eval()
     clf = nn.Sequential(nn.Linear(dim + 3, 256), nn.GELU(), nn.Linear(256, 3)).to(device)
