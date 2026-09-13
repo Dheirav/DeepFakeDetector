@@ -25,7 +25,9 @@ The rebuild on a corpus verified to carry no such shortcut is in
 [The rebuild](#the-rebuild). The first honest number was **65.8%** against the
 original 89%, and the gap between those two figures is the whole point of the
 project. The final model, a CLIP ViT-B/16 mask head, reaches **80.4%** on the same
-clean data, still below the original's headline and worth more than it.
+clean data, still below the original's headline and worth more than it. It says
+"cannot tell" when unsure, and the first photo of mine I gave it was one of
+those: see [The test that started this](#the-test-that-started-this).
 
 - Full limitations, for both models: **[`LIMITATIONS.md`](LIMITATIONS.md)**
 - Audit trail: [`docs/REVIEW_2026-09-08.md`](docs/REVIEW_2026-09-08.md) ·
@@ -154,7 +156,13 @@ source image's ID. That is what the rebuild is built around; see
 The findings above say what went wrong. This section says what happened when the
 same task was attempted on a corpus where the shortcut does not exist.
 
-<!-- ✍️  YOUR WORDS: a sentence or two on deciding to rebuild rather than patch. -->
+I did not find the problem by auditing. I found it by doing what I had built the
+thing for: I gave the model some photos I had taken myself, and it got most of
+them wrong, while it kept getting the dataset images right. The audit came after,
+to work out why. Once it was clear that the 89% was measuring where a file came
+from, there was nothing to patch. A better architecture or more epochs on that
+data would have learned the same shortcut faster. The only fix was data where the
+shortcut does not exist, and that meant starting again.
 
 ### A dataset where the shortcut is measurably absent
 
@@ -347,7 +355,116 @@ generator still notices something is wrong while losing track of where. That
 asymmetry reproducing independently across three implementations is the most
 useful thing this project measured.
 
-<!-- ✍️  YOUR WORDS: what you take from the rebuild. -->
+### Lever seven: fine-tuning the encoder buys accuracy with transfer
+
+Everything above keeps the encoder frozen. The OpenSDI paper trains theirs, and
+that was the one difference left untested. Unfreezing the last 4 of CLIP's 12
+blocks at a tenth of the head's learning rate, with every other argument
+identical, gives the highest in-distribution number in the project and the
+worst transfer:
+
+| | frozen | last 4 blocks trained |
+|---|---|---|
+| 3-class accuracy, same 4,050 images | 0.8040 | **0.9015** (p = 3.9e-49) |
+| `ai_edited` F1 / mask IoU | 0.722 / 0.272 | 0.855 / 0.401 |
+| held-out `ai_generated` recall: sd2 | 0.820 | 0.850 |
+| sd3 | 0.660 | 0.505 |
+| sdxl | 0.635 | **0.328** |
+| flux | 0.647 | **0.240** |
+| mean held-out recall, 9 rows | **0.723** | 0.657 |
+
+On flux it calls 267 of 400 synthetic images real. The encoder learned what sd15
+output looks like because that was the cheapest way to separate the training
+classes, and the further a generator sits from sd15 the harder the fall.
+`ai_edited` held or improved on every generator, because an inpainting boundary
+is a property of the edit rather than of the generator that made it.
+
+This is the original project's failure reproduced on purpose, on clean data, with
+one flag changed: the test score went up and the detector got worse. The frozen
+model stays the headline for that reason. The 116 MB fine-tuned checkpoint is not
+in git; `results/mask_head_clip448_ft4/README.md` has the full table.
+
+### Lever eight: augmenting away the smoothness cue makes it worse
+
+Every inpainted region in the training data is smooth and low-noise, and the
+decoder has learned smoothness as its cue (see the photo below). Blurring,
+median-filtering or lightly flat-filling random regions of real training images
+with the mask target kept at zero, plus noise inside the mask of edited images,
+was meant to force a different cue. Otherwise identical to the frozen reference:
+
+| | reference | smooth-aug |
+|---|---|---|
+| in-distribution | 0.8040 | 0.7911 (p = 0.025) |
+| real images called edited | 25.5% | 30.7% |
+| mean held-out recall | 0.723 | 0.689, worse on 8 of 9 rows |
+
+The reading that fits both this and lever seven: frozen CLIP features carry no
+better inpainting cue than smoothness, so telling the decoder that smoothness is
+unreliable leaves it with nothing. A new cue has to be learned by the encoder,
+and lever seven shows what that costs without more varied training data.
+
+### Saying "cannot tell"
+
+Softmax outputs are not calibrated, and a 0.82 on a wrong answer is not rarer
+than a 0.6 on one. `scripts/evaluation/abstain_sweep.py` measures, from the saved
+probabilities, what an abstain threshold costs in coverage and buys in accuracy:
+
+| answer only if top prob ≥ | coverage | accuracy when answered | sd2 real photos given a confident wrong answer |
+|---|---|---|---|
+| 0.50 (always answer) | 99% | 0.807 | 6.8% |
+| 0.80 | 69% | 0.902 | 2.5% |
+| **0.90** | **56%** | **0.944** | **0.5%** |
+| 0.95 | 48% | 0.967 | 0.5% |
+
+The line is set at 0.90 in `results/mask_head_clip448_balanced/decision_rule.json`
+and both the UI and the CLI read it. For a tool meant to help someone decide
+whether to trust an image, declining to answer is a correct output and a
+confident wrong answer is the worst one.
+
+### The test that started this
+
+The first photo I gave the rebuilt model was one I took at an event. The frozen
+CLIP model called it `ai_edited` at 0.82. Asked where, it pointed here:
+
+![the predicted edit mask on a real photo](docs/figures/own_photo_mask_frozen.png)
+
+The red is the laptop lid, the black bottle, the glossy red tablecloth, the water
+can and a chair back: smooth, saturated surfaces with clean edges, which is what
+an inpainted region looks like in the training data. Nothing on the people. Fed
+without the 512px re-encode the training data had, the same photo scores 0.69
+`real`, because the re-encode strips sensor noise and makes smooth regions
+smoother. Under the 0.90 rule the verdict is "cannot tell" either way.
+
+This is a different failure from the first model's. That one read file headers
+and could not be asked why. This one is looking at pixels, has an explainable
+reason to be wrong, and says so when it is unsure. It is still wrong. Held-out
+`real` recall is 0.93, so about one real photo in fourteen gets this treatment,
+and a set of my own photos large enough to measure that rate is the one
+experiment left that would change a sentence here.
+
+### What I take from this
+
+If I did this again I would not start with a model. I would start with the
+question "what would a model that learned nothing about the task still be able
+to score on this data", and answer it before training anything. On the original
+corpus the answer was 87%, and it took me a full audit and a failed demo to find
+that out after the fact, when a lookup table on file headers could have told me
+in an afternoon. The metadata probe and the degradation grid are in this repo
+now, and they are the first thing I would run on any dataset.
+
+The second thing is that every improvement that survived came from measuring
+whether a number deserved to be believed, and every fake improvement was caught
+the same way. Six levers that did nothing, one encoder swap that did, one
+fine-tune that scored 90 and was worse, one augmentation that scored lower and
+was also worse. None of those would have been visible from the test-set number
+alone. The number I trust most in this project is 0.723, the mean recall on
+generators the model never saw, and it is not a number I would have known to
+look at a year ago.
+
+The detector I wanted when I started, one that tells you whether to believe a
+photo you saw online, does not exist yet, here or in the papers. What exists here
+is an honest account of how far a careful attempt gets on a laptop, where it
+fails, and how to tell.
 
 ### Reproducing this
 
@@ -370,6 +487,10 @@ venv-linux/bin/python scripts/training/train_mask_head.py \
     --out results/mask_head_clip448_balanced
 venv-linux/bin/python scripts/evaluation/mask_head_generalisation.py \
     --checkpoint results/mask_head_clip448_balanced/best_model.pth
+
+# where to put the "cannot tell" line, and your own photos through the model
+venv-linux/bin/python scripts/evaluation/abstain_sweep.py --choose 0.9
+venv-linux/bin/python scripts/inference/predict_mask_head.py my_photos/
 ```
 
 ---
@@ -852,18 +973,26 @@ streamlit run frontend/app.py
 **Features:**
 - Image upload (JPG, PNG, WEBP) with size validation
 - **✂️ Interactive crop panel** — drag-to-crop before analysis (Free / 1:1 / 4:3 / 16:9 / 3:4 aspect ratios); toggle via sidebar
-- Real-time inference with a large prediction badge (🟢 Real / 🔴 AI Generated / 🟠 AI Edited)
-- Per-class confidence progress bars for all three classes
-- **Grad-CAM tabbed panel:**
-  - 🌡️ Overlay tab — heatmap blended onto the image + download button
-  - 📊 Side-by-side comparison tab — original | raw heatmap | overlay in one image
-  - 🗺️ Raw heatmap tab — grayscale activation map
-- **All-class Grad-CAM expander** — renders heatmaps for all three classes side-by-side
-- Sidebar controls: model checkpoint path, GPU toggle, target class, colormap (jet/viridis/hot/plasma), opacity slider
-- Model cached with `@st.cache_resource` — loads once per session
+- Prediction badge: 🟢 Real / 🔴 AI Generated / 🟠 AI Edited / ⚪ **Cannot tell**, the
+  last when the top probability is under the line in `decision_rule.json`
+  (default 0.90, adjustable in the sidebar with the coverage/accuracy trade shown)
+- Per-class probability bars, with a note that they are not calibrated
+- **Predicted edit mask** (mask-head checkpoints): the decoder's supervised estimate of
+  which pixels were altered, as overlay, side-by-side and raw tabs. This is the
+  primary explanation because it was trained against ground-truth masks.
+- **Grad-CAM**: on the encoder's final token grid for the ViT mask heads, on a conv
+  layer for the legacy ConvNeXt checkpoints. Post-hoc; expect hot patches in flat
+  background on the ViT, which is a known token-norm artefact.
+- All-class Grad-CAM expander, crop panel, colormap and opacity controls
+- Sidebar toggle to re-encode the upload to 512px JPEG q90 as the training data was
+- Model cached with `@st.cache_resource`
 
 **Configuration:**
-Edit `frontend/config.py` to set default model path. The default points to the trained checkpoint: `models/run_20260307_063053/best_resnet18.pth`.
+`frontend/config.py` defaults to `results/mask_head_clip448_balanced/best_model.pth`,
+the frozen CLIP mask head. Paste `results/mask_head_clip448_ft4/best_model.pth`
+(fine-tuned, if you have the local copy) or the legacy
+`models/17__convnext-small__strong__0.4__cosine__focal__srm-gem/best_model.pth`
+into the sidebar to compare models on the same upload.
 
 ---
 

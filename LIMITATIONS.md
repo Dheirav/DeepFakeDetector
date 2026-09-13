@@ -256,9 +256,33 @@ The cross-generator figures above are the transfer numbers, and they are lower.
 nothing measurable, but that was tested on the encoder that turned out to be the
 bottleneck, so the data-volume result may not carry over to CLIP.
 
-**The encoder is frozen.** Every result in this section comes from a small
-decoder and head on fixed features. The paper trains the encoder. Whether that
-accounts for the remaining gap, or whether it is the data, is untested.
+**The encoder is frozen, and unfreezing it is a trade, not a fix.** Training the
+last 4 of 12 CLIP blocks lifts the in-distribution number to 0.9015 and drops
+`ai_generated` recall on flux from 0.647 to 0.240 and on sdxl from 0.635 to
+0.328. The encoder learns the training generator's fingerprint. The frozen
+model is the headline because the held-out number is the one that matters for
+an image of unknown origin; the fine-tuned checkpoint is documented in
+`results/mask_head_clip448_ft4/README.md` and not committed (116 MB).
+
+**It calls smooth surfaces edited.** The first real photo tested, a conference
+room with a glossy red tablecloth and a laptop lid, came back `ai_edited` at
+0.82 with the mask on the tablecloth. Every inpainted region in the training
+data is smooth and low-noise and the decoder uses that as its cue. Augmenting
+real training images with smoothed regions to break the cue made every measured
+number worse (0.8040 to 0.7911 in-distribution, held-out mean 0.723 to 0.689),
+which says the frozen features carry no better cue to fall back on. Held-out
+`real` recall is 0.93, so roughly one real photo in fourteen is affected.
+
+**Its probabilities are not calibrated.** Softmax outputs cluster near 0 and 1
+regardless of correctness. The UI and CLI therefore abstain below a top
+probability of 0.90, chosen by measuring coverage against accuracy on the saved
+test probabilities: 56% of in-distribution images answered, 94% right when
+answered, and the confident-wrong rate on sd2 real photos falls from 6.8% to
+0.5%. That is a decision rule around an uncalibrated model, not calibration.
+
+**One real photo is not a false-positive rate.** The tablecloth case is a
+worked example. A set of 30 or more photos provably outside every dataset is
+needed to turn it into a number, and does not exist yet.
 
 **The `ai_generated` cross-generator column has no control.** Both sd15 test shards
 sampled happened to hold `ai_edited`, so that column cannot separate "unseen
