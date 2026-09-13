@@ -213,13 +213,24 @@ linear probe rather than the final CLIP mask head, it says so; the probe is the
 model the degradation grid was run on, and that grid has not been repeated on
 the mask head.
 
-**It does not survive compression.** At 256px JPEG q80 it scores 0.533 against a
-0.520 majority-class baseline, which is 1.3 points above predicting "real" for
-everything. It would not work on an image taken off the web. The improvement over
-the original model is in failure *mode*, not in robustness: the original inverted
-to 0.027, meaning confidently and systematically wrong, while the probe decays
-toward chance. A model that becomes useless is safer than one that becomes
-backwards, but neither detects anything under those conditions.
+**It degrades under compression, and does not notice.** On 600 held-out images
+the final CLIP mask head goes from 0.832 clean to 0.680 at 256px JPEG q80 and
+0.605 at 224px q50, against a 0.338 majority baseline (balanced classes). That
+is a 15 to 23 point loss, and well above chance, where the linear probe at
+256/q80 sat 1.3 points above its baseline and the original ConvNeXt inverted to
+0.027. So: better than both earlier models, and still not something to trust on
+an image taken off the web. Mask IoU falls 0.284 to 0.223 across the same grid.
+The classes trade places as quality drops: at 320/q85 real recall is 0.374
+while edited holds 0.695; at 224/q50 real is back to 0.783 and edited has
+fallen to 0.251. The model keeps answering; it just changes which class it
+dumps the uncertain images into.
+
+The part that matters for the abstain rule: **coverage does not move.** The
+model answers 55% of clean images and 50% of 224/q50 images, while its accuracy
+when it does answer falls from 0.958 to 0.705. Its confidence is not a function
+of image quality, so the "cannot tell" verdict does not protect against a
+degraded input. It would need an explicit quality check in front of it, which
+it does not have. Full grid in `results/mask_head_clip448_balanced/degradation.json`.
 
 **It does not transfer well to unfamiliar generators.** The final CLIP mask head,
 trained on sd15, has `ai_generated` recall of 0.820 on sd2, 0.660 on sd3, 0.635 on

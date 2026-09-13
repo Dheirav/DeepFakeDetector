@@ -86,7 +86,7 @@ one-epoch checkpoint is deliberately not committed).
 | `mask_head_clip/` | CLIP B/16 @224 | 21,175 | 0.7835 corr. | 0.176 | the encoder was the bottleneck: +10 points |
 | `mask_head_clip448/` | CLIP B/16 @448, interpolated pos. emb. | 21,175 | 0.7969 corr. | 0.237 | features and grid stack |
 | `mask_head_clipL448/` | CLIP L/14 @448 | 21,175 | partial | 0.254 (1 epoch) | stopped: 2+ hours per epoch under thermal throttling; see `PARTIAL.md` |
-| **`mask_head_clip448_balanced/`** | CLIP B/16 @448 | 13,500 | **0.8040** | 0.272 | **final model**; paired with `mask_head_weighted` (p = 2.02e-16); `heldout_generators.json` is the cross-generator result; `decision_rule.json` is the abstain line the frontend reads |
+| **`mask_head_clip448_balanced/`** | CLIP B/16 @448 | 13,500 | **0.8040** | 0.272 | **final model**; paired with `mask_head_weighted` (p = 2.02e-16); `heldout_generators.json` is the cross-generator result; `decision_rule.json` is the abstain line the frontend reads; `degradation.json` is the compression grid |
 | `mask_head_clip448_ft4/` | CLIP B/16 @448, last 4 blocks trained | 13,500 | 0.9015 | 0.401 | fine-tuning: +10 in-domain, held-out mean 0.723 to 0.657, flux `ai_generated` 0.647 to 0.240. Checkpoint (116 MB) not committed; see its README |
 | `mask_head_clip448_smoothaug/` | CLIP B/16 @448, smooth-patch aug | 13,500 | 0.7911 | 0.265 | negative: augmenting real images with smoothed regions hurt in-domain (p = 0.025) and held-out (0.689) |
 

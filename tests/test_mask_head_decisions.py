@@ -101,3 +101,29 @@ class TestNoiseInMaskAugment(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.environ.get("RUN_SLOW") == "1"
+                     and os.path.isfile(os.path.join(ROOT, "results/mask_head_clip448_balanced/best_model.pth")),
+                     "needs the checkpoint, torch.hub cache and a few GB of RAM; RUN_SLOW=1 to run")
+class TestTokenGradCAM(unittest.TestCase):
+    """The ViT Grad-CAM hooks the last transformer block and makes its output a
+    leaf. If the hook is not removed, or the grid reshape is wrong, this fails."""
+    @classmethod
+    def setUpClass(cls):
+        from frontend.mask_head import MaskHeadModel
+        cls.m = MaskHeadModel(os.path.join(ROOT, "results/mask_head_clip448_balanced/best_model.pth"), device="cpu")
+
+    def test_cam_is_grid_shaped_and_normalised(self):
+        cam = self.m.gradcam(_photo(size=(64, 64)), 0)
+        self.assertEqual(cam.shape, (self.m.grid, self.m.grid))
+        self.assertAlmostEqual(float(cam.max()), 1.0, places=5)
+        self.assertGreaterEqual(float(cam.min()), 0.0)
+
+    def test_hook_does_not_leak_into_predict(self):
+        img = _photo(size=(64, 64))
+        before = self.m.predict(img)[1]
+        self.m.gradcam(img, 2)
+        after = self.m.predict(img)[1]
+        for k in before:
+            self.assertAlmostEqual(before[k], after[k], places=5)

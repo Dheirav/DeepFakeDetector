@@ -13,11 +13,30 @@ any phase, you still have a defensible deliverable.
 
 ---
 
-## Status — 2026-09-08
+## Status, 2026-09-13: the plan is complete
 
-**Phases 0, 1 and 2 are complete, and the code half of Phase 3 is done.** What
-remains in Phase 3 is data acquisition, which needs network and disk rather than
-code.
+Every phase below has been carried out, and the results superseded parts of the
+plan itself. What each one produced:
+
+| Phase | Outcome | Where |
+|---|---|---|
+| 0, stop the bleeding | done as written | table below |
+| 1, the instruments | metadata probe, degradation grid, selection-inversion analysis all built and run | `scripts/data/metadata_confound.py`, `scripts/evaluation/` |
+| 2, fix the builder | done as written | table below |
+| 3, rebuild the data | **not the 20-source re-download.** OpenSDI supplies all three classes from one real pool with masks, so the rebuild used a slice of it instead: 4,500 per class, re-encoded to 512px JPEG q90, metadata probe at exactly the baseline. The pair index and LOSO splitter were built and are not what the final data used. | `dataset_builder/tools/convert_opensdi.py`, README "The rebuild" |
+| 4, retrain honestly | linear probe first as planned: 0.6593. Crop-not-resize was superseded by the mask head at 448px. Leave-one-generator-out replaces leave-one-source-out because the corpus has one real source. Result: 0.8040 in-domain, mean held-out recall 0.723. | `results/mask_head_clip448_balanced/`, `docs/BENCHMARK_COMPARISON.md` |
+| 5, segmentation head | done, and it became the main model rather than an optional extra. IoU 0.272 against the paper's 0.671. | `scripts/training/train_mask_head.py` |
+
+Beyond the plan: eight levers tested (six flat, one large gain from the encoder
+swap, one gain that cost transfer), a fine-tuning run that reproduced the
+original failure on clean data, an abstain rule, and the first own-photo test.
+The "expect 65 to 80 percent and say so" line held: the honest range turned out
+to be 66 to 80. The "real-vs-real coherence probe" in Phase 1 is moot with a
+single real source and was not run. `README.md` and `LIMITATIONS.md` section 9
+are the current account; this file is the plan as it stood on 2026-09-08 and
+the status of the code fixes, kept for the record.
+
+### Code fixes as of 2026-09-08
 
 | Item | Status | Evidence |
 |---|---|---|
@@ -36,8 +55,8 @@ code.
 | Validator reject path | **fixed** | unreadable images dropped; `low_resolution` now scores 0.69, below the 0.7 gate |
 | SRM initialisation | **fixed** | residual channels distinct, variance contribution 0.0008 -> 0.10 |
 | Matched-pair index | **built** | `dataset_builder/pair_index.csv` -- **16,719 pairable manipulations from 13,110 distinct originals** |
-| Re-download sources + masks | **not started** | needs network/disk; 13 of 20 have a URL or script in-repo |
-| Retrain under the corrected build | **not started** | blocked on the above |
+| Re-download sources + masks | **superseded** | OpenSDI used instead; see the status table above |
+| Retrain under the corrected build | **done** | `results/mask_head_clip448_balanced/`, 0.8040 |
 
 Smoke tests: 0 import failures and 0 `--help` failures across every module in
 `scripts/` and `frontend/`, up from 1 and 2. Code net: **-1,095 / +685** lines.

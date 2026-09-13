@@ -1,0 +1,17 @@
+Using cache found in /home/dheirav/.cache/torch/hub/openai_CLIP_main
+  600 held-out test images, class counts [198, 199, 203]
+  interpolated CLIP positional embeddings 14x14 -> 28x28
+  clip:ViT_B_16 @ 448px, epoch 4, abstain below 0.90
+
+  condition       accuracy    real  ai_gen ai_edit     IoU  coverage  acc|ans
+  clean              0.832   0.732   0.990   0.773   0.284     0.555    0.958
+  448 / q90          0.787   0.616   0.980   0.764   0.283     0.555    0.922
+  384 / q75          0.748   0.677   0.970   0.601   0.275     0.505    0.901
+  320 / q85          0.688   0.374   0.995   0.695   0.273     0.540    0.830
+  256 / q80          0.680   0.439   0.965   0.635   0.262     0.518    0.846
+  256 / q60          0.680   0.677   0.915   0.453   0.249     0.535    0.794
+  224 / q50          0.605   0.783   0.789   0.251   0.223     0.503    0.705
+
+  clean 0.832  worst 0.605  drop 0.227  majority baseline 0.338
+  linear probe on the same corpus: 0.667 clean, 0.533 at 256/q80; original ConvNeXt: 0.993 -> 0.027
+  saved -> results/mask_head_clip448_balanced/degradation.json
