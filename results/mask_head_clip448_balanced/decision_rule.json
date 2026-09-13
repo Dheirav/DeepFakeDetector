@@ -1,0 +1,11 @@
+{
+  "abstain_below": 0.9,
+  "coverage_in_distribution": 0.562716049382716,
+  "accuracy_when_answered": 0.9442738043001316,
+  "precision_when_answered": {
+    "real": 0.9131205673758865,
+    "ai_generated": 0.9840127897681854,
+    "ai_edited": 0.875
+  },
+  "source": "scripts/evaluation/abstain_sweep.py on this run's saved probabilities"
+}

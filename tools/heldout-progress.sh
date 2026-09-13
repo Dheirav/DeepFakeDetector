@@ -8,7 +8,7 @@ log=${1:?log path}; shift
 total=$(ls -d data_sources/heldout/*/*/ 2>/dev/null | grep -vc _masks)
 show() {
   [ -f "$log" ] || { echo "no log yet"; return; }
-  start=$(stat -c %Y "$log"); now=$(date +%s); el=$((now - start))
+  start=$(stat -c %W "$log" 2>/dev/null); [ "$start" = 0 ] || [ -z "$start" ] && start=$(stat -c %Y "$log"); now=$(date +%s); el=$((now - start))
   done_=$(grep -cE '^\s+\S+\s+(real|ai_generated|ai_edited)\s+[0-9]+' "$log")
   printf "rows %d/%d   elapsed %dm%02ds" "$done_" "$total" $((el/60)) $((el%60))
   if [ "$done_" -gt 0 ]; then

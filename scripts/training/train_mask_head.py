@@ -33,9 +33,66 @@ participates in the classification loss.
 
 import argparse, json, os, sys
 
+import numpy as np
+from PIL import Image
+
 CLASSES = ["real", "ai_generated", "ai_edited"]
 EDITED = 2
 GENERATED = 1
+
+
+def smooth_patch_augment(img, rng, n_max=3, frac=(0.03, 0.25)):
+    """Make part of a real photo look inpainted without editing it.
+
+    The first real photo the rebuilt model was shown (a conference room, a
+    glossy red tablecloth, a laptop lid) came back "ai_edited" with the mask
+    on the tablecloth. Every inpainted region in OpenSDI is smooth, low-noise
+    and uniformly coloured with a crisp edge against camera pixels, and 4,500
+    COCO photos contain too few large glossy surfaces to teach the decoder
+    that smoothness alone is not an edit. So: blur, denoise or flat-fill one
+    to three random regions of a real image and keep the mask target at zero.
+    The decoder then has to find a cue that survives this, most plausibly the
+    boundary statistics of actual inpainting.
+
+    Regions are ellipses or rectangles because inpainting masks in OpenSDI are
+    object-shaped, not square. Returns a new PIL image.
+    """
+    from PIL import ImageDraw, ImageFilter
+    w, h = img.size
+    out = img.copy()
+    for _ in range(rng.integers(1, n_max + 1)):
+        area = rng.uniform(*frac) * w * h
+        ar = rng.uniform(0.5, 2.0)
+        pw, ph = int(min(w, (area * ar) ** 0.5)), int(min(h, (area / ar) ** 0.5))
+        if pw < 8 or ph < 8:
+            continue
+        x0, y0 = rng.integers(0, w - pw + 1), rng.integers(0, h - ph + 1)
+        box = (int(x0), int(y0), int(x0 + pw), int(y0 + ph))
+        region_mask = Image.new("L", (w, h), 0)
+        d = ImageDraw.Draw(region_mask)
+        (d.ellipse if rng.random() < 0.6 else d.rectangle)(box, fill=255)
+        kind = rng.integers(0, 3)
+        if kind == 0:        # gaussian blur: what a diffusion decoder's output looks like
+            patch = out.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(1.5, 5.0))))
+        elif kind == 1:      # median: sensor noise removed, edges kept
+            patch = out.filter(ImageFilter.MedianFilter(size=int(rng.choice([5, 7, 9]))))
+        else:                # flat fill at the region's mean colour, lightly blended
+            crop = out.crop(box)
+            mean = tuple(int(v) for v in np.asarray(crop).reshape(-1, 3).mean(0))
+            patch = Image.blend(out, Image.new("RGB", (w, h), mean), float(rng.uniform(0.3, 0.7)))
+        # soften the boundary a little so it is not a trivially detectable hard edge
+        region_mask = region_mask.filter(ImageFilter.GaussianBlur(radius=float(rng.uniform(0.5, 2.0))))
+        out = Image.composite(patch, out, region_mask)
+    return out
+
+
+def noise_in_mask_augment(img, mask, rng, sigma=(2.0, 8.0)):
+    """Mirror of the above for edited images: add sensor-like noise inside the
+    inpainted region so 'less noise than its surroundings' is not the cue."""
+    a = np.asarray(img).astype(np.float32)
+    m = (np.asarray(mask.resize(img.size, Image.NEAREST)) > 127)[..., None]
+    a = a + rng.normal(0, rng.uniform(*sigma), a.shape) * m
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
 
 
 def build_decoder(dim):
@@ -183,6 +240,10 @@ def main():
                          "number.")
     ap.add_argument("--enc-lr-scale", type=float, default=0.1,
                     help="encoder learning rate as a fraction of --lr")
+    ap.add_argument("--smooth-aug", type=float, default=0.0, metavar="P",
+                    help="probability of smooth-patch augmentation on a real "
+                         "training image, and of in-mask noise on an edited one. "
+                         "See smooth_patch_augment. 0 disables (every earlier run).")
     ap.add_argument("--class-weights", type=float, nargs=3, default=None,
                     metavar=("W_REAL", "W_GEN", "W_EDIT"),
                     help="per-class loss weights. Scaling the data made the "
@@ -220,19 +281,28 @@ def main():
     norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
     class DS(Dataset):
-        def __init__(self, idx): self.idx = idx
+        def __init__(self, idx, augment=False):
+            self.idx, self.augment = idx, augment
         def __len__(self): return len(self.idx)
         def __getitem__(self, i):
             j = self.idx[i]
-            img = Image.open(files[j]).convert("RGB").resize((args.size, args.size),
-                                                             Image.BILINEAR)
-            x = norm(transforms.functional.to_tensor(img))
             y = int(labels[j])
+            img = Image.open(files[j]).convert("RGB")
             stem = os.path.splitext(os.path.basename(files[j]))[0]
             mp = os.path.join(args.mask_dir, stem + ".png")
-            if y == EDITED and os.path.exists(mp):
-                m = Image.open(mp).convert("L").resize((args.size, args.size),
-                                                       Image.NEAREST)
+            m = Image.open(mp).convert("L") if (y == EDITED and os.path.exists(mp)) else None
+            if self.augment and args.smooth_aug > 0:
+                # Per-item generator seeded from the index and epoch-independent
+                # draw, so workers do not replay one another's random stream.
+                rng = np.random.default_rng((args.seed, int(j), int(torch.randint(0, 2**31, (1,)))))
+                if y == 0 and rng.random() < args.smooth_aug:
+                    img = smooth_patch_augment(img, rng)
+                elif y == EDITED and m is not None and rng.random() < args.smooth_aug:
+                    img = noise_in_mask_augment(img, m, rng)
+            img = img.resize((args.size, args.size), Image.BILINEAR)
+            x = norm(transforms.functional.to_tensor(img))
+            if m is not None:
+                m = m.resize((args.size, args.size), Image.NEAREST)
                 mask = (torch.from_numpy(np.array(m)).float() / 255.0 > 0.5).float()
             else:
                 mask = torch.zeros(args.size, args.size)
@@ -274,7 +344,9 @@ def main():
         dice = 1 - (2 * inter + 1) / (p.sum(dim=(1, 2)) + t.sum(dim=(1, 2)) + 1)
         return bce + dice.mean()
 
-    dl_tr = DataLoader(DS(tr), batch_size=args.batch, shuffle=True, num_workers=args.workers)
+    if args.smooth_aug > 0:
+        print(f"  smooth-patch augmentation on real / in-mask noise on edited, p={args.smooth_aug}")
+    dl_tr = DataLoader(DS(tr, augment=True), batch_size=args.batch, shuffle=True, num_workers=args.workers)
     dl_te = DataLoader(DS(te), batch_size=args.batch, shuffle=False, num_workers=args.workers)
 
     def evaluate():
@@ -368,6 +440,7 @@ def main():
                "ai_edited_mask_iou": miou, "n_masks_scored": int((trues == EDITED).sum()),
                "best_epoch": best["epoch"], "history": history,
                "unfreeze": args.unfreeze, "enc_lr_scale": args.enc_lr_scale,
+               "smooth_aug": args.smooth_aug,
                "note": ("frozen encoder; " if not args.unfreeze else
                         f"last {args.unfreeze} encoder blocks trained at "
                         f"{args.enc_lr_scale}x lr; ")
