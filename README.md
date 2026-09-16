@@ -592,6 +592,7 @@ followed and its outcome is [`docs/SALVAGE_PLAN.md`](docs/SALVAGE_PLAN.md).
 
 ## Documentation
 
+- [`docs/HANDOVER.md`](docs/HANDOVER.md): the live state, what is open, what will bite you
 - [`LIMITATIONS.md`](LIMITATIONS.md): what neither model can do, with the measurements
 - [`docs/BENCHMARK_COMPARISON.md`](docs/BENCHMARK_COMPARISON.md): our numbers next to the OpenSDI paper's
 - [`docs/GENERALISATION_LITERATURE.md`](docs/GENERALISATION_LITERATURE.md): why detectors fail on unseen generators, from the literature
