@@ -1,5 +1,26 @@
 # External benchmark: submitting to FaceForensics++
 
+> ## CORRECTED 2026-09-22: the numbers below are withdrawn
+>
+> This document was written before the audit of 2026-09-08 and is kept as a
+> record of the plan, not as a source of results. Two claims in it no longer
+> stand:
+>
+> 1. **89.5% is not the headline number.** It was measured on a corpus where
+>    every source dataset maps to exactly one class, and a lookup on file
+>    format plus resolution scores 87.4% on the same split without reading a
+>    pixel. The model recognised which dataset a file came from. See
+>    `../LIMITATIONS.md` sections 1 to 8 and `../README.md`.
+> 2. **The "under 0.2%" forensic-component result is not established.** The
+>    ablation it rests on compared runs that turn out not to contain the
+>    components their folder names claim, and the measured noise floor between
+>    identical configs is 0.15 pp, larger than every claimed effect. See
+>    `../results/ablation_study.md` and its own correction banner.
+>
+> The rebuilt model and its numbers are in `../docs/HANDOVER.md`. Submitting
+> the confounded ConvNeXt to FF++ would measure the shortcut, not the detector,
+> so this plan was not carried out. The text below is unchanged.
+
 ## Why
 
 The headline number in this repo — **89.5% validation accuracy** (run 21,

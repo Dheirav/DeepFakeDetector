@@ -209,9 +209,10 @@ making the output class-independent).
 Sections 1 to 8 describe the original fine-tuned model. The models trained on
 the verified-clean OpenSDI slice are different objects with different problems,
 and they should not be quoted without these. Where a number below is from the
-linear probe rather than the final CLIP mask head, it says so; the probe is the
-model the degradation grid was run on, and that grid has not been repeated on
-the mask head.
+linear probe rather than the final CLIP mask head, it says so. The degradation
+grid was first run on the probe and has since been repeated on the mask head;
+the mask-head figures are the ones quoted here, from
+`results/mask_head_clip448_balanced/degradation.json`.
 
 **It degrades under compression, and does not notice.** On 600 held-out images
 the final CLIP mask head goes from 0.832 clean to 0.680 at 256px JPEG q80 and

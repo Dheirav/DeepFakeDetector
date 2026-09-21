@@ -526,7 +526,7 @@ venv-linux/bin/python -m streamlit run frontend/app.py
 # a folder of your own photos through the same model
 venv-linux/bin/python scripts/inference/predict_mask_head.py my_photos/
 
-# the tests (44, stdlib unittest)
+# the tests: 46 in the files, 44 run by default; RUN_SLOW=1 adds the two that load the model
 venv-linux/bin/python -m unittest discover -s tests -t .
 ```
 

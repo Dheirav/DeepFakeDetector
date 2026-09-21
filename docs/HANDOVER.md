@@ -1,8 +1,8 @@
 # Handover
 
 The live state of the project. Read this first; the README is the account and
-may lag behind by a run or two, this file should not. Last updated 2026-09-16,
-at commit `75ca89ed`.
+may lag behind by a run or two, this file should not. Last updated 2026-09-22,
+at commit `4ac63208`, with uncommitted doc corrections from 2026-09-22.
 
 ## What this is, in three sentences
 
@@ -89,7 +89,7 @@ venv-linux/bin/python -m streamlit run frontend/app.py
 # your own photos
 venv-linux/bin/python scripts/inference/predict_mask_head.py my_photos/
 
-# tests (44 fast; RUN_SLOW=1 adds two that load the model on CPU)
+# tests: 46 in the files, 44 run by default; RUN_SLOW=1 adds the two that load the model on CPU
 venv-linux/bin/python -m unittest discover -s tests -t .
 
 # retrain the headline model (about 90 minutes on the RTX 4060 laptop GPU)
