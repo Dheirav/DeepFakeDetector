@@ -32,6 +32,11 @@ def main():
     ap.add_argument("--out", default="results/predictions",
                     help="where the mask overlays go")
     ap.add_argument("--no-overlay", action="store_true")
+    ap.add_argument("--no-quality-gate", action="store_true",
+                    help="do not check the raw file's size and JPEG quality. By default "
+                         "an image under 256px on the short side, or JPEG quality under "
+                         "65, gets 'cannot tell', because the abstain rule does not notice "
+                         "degraded input. See frontend/quality.py.")
     ap.add_argument("--abstain-below", type=float, default=None,
                     help="top probability under which the verdict is 'cannot tell'. "
                          "Default: the decision_rule.json next to the checkpoint, "
@@ -52,7 +57,9 @@ def main():
     from PIL import Image, ImageOps
     from torchvision import transforms
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
     from training.train_mask_head import build_decoder, build_encoder
+    from frontend import quality
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ck = torch.load(args.checkpoint, map_location="cpu")
@@ -94,6 +101,9 @@ def main():
     with torch.no_grad():
         for p in paths:
             try:
+                # Measure the raw file before load() re-encodes it to 512/q90.
+                rep = (None if args.no_quality_gate
+                       else quality.assess(*quality.read_source(p)))
                 x, shown = load(p)
             except Exception as e:
                 print(f"  {os.path.basename(p)[:40]:<40} could not read: {e}")
@@ -109,8 +119,13 @@ def main():
             k = int(pr.argmax())
             area = float((prob[0] > 0.5).float().mean())
             verdict = CLASSES[k] if pr[k] >= tau else "cannot tell"
+            note = None
+            if rep is not None:
+                verdict, note = quality.gate(verdict, rep, "cannot tell")
             print(f"  {os.path.basename(p)[:40]:<40}{pr[0]:>7.3f}{pr[1]:>7.3f}{pr[2]:>7.3f}"
                   f"   {verdict:<14} {area:5.1%}", flush=True)
+            if note:
+                print(f"    note: {note}")
             if not args.no_overlay:
                 m = (prob[0].cpu().numpy() * 255).astype(np.uint8)
                 m = Image.fromarray(m).resize(shown.size, Image.BILINEAR)

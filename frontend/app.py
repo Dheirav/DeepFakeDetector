@@ -30,6 +30,7 @@ from frontend import config
 from frontend import inference
 from frontend import gradcam as gradcam_module
 from frontend import mask_head as mask_head_module
+from frontend import quality as quality_module
 
 CLASS_NAMES = ["Real", "AI Generated", "AI Edited"]
 CLASS_COLORS = {"Real": "🟢", "AI Generated": "🔴", "AI Edited": "🟠",
@@ -205,6 +206,19 @@ def main():
     verdict = (mask_head_module.apply_rule(probs, abstain_below) if is_mask_head
                else top_label)
 
+    # The abstain rule cannot see degraded input, so check the raw upload. Size
+    # comes from the (possibly cropped) image, JPEG quality from the file itself,
+    # which is the only place it survives.
+    quality_note, quality_withheld = None, False
+    if is_mask_head:
+        try:
+            upload_q = quality_module.read_source(uploaded)[1]
+        except Exception:
+            upload_q = None
+        qrep = quality_module.assess(min(pil_img.size), upload_q)
+        verdict, quality_note = quality_module.gate(verdict, qrep, mask_head_module.ABSTAIN)
+        quality_withheld = qrep.level == quality_module.POOR
+
     st.divider()
 
     # ── Results ────────────────────────────────────────────────────────────────
@@ -216,8 +230,11 @@ def main():
         st.markdown(
             f"<h2 style='text-align:center'>{color} {verdict}</h2>"
             f"<p style='text-align:center; font-size:1.1rem; color:grey'>"
-            f"Leaning <b>{top_label}</b> at {conf*100:.1f}%, below the {abstain_below:.2f} line. "
-            f"The model is not sure enough to say, and a confident wrong answer is worse than none.</p>",
+            + ("The input is too small or too compressed to trust a verdict, see the note below."
+               if quality_withheld else
+               f"Leaning <b>{top_label}</b> at {conf*100:.1f}%, below the {abstain_below:.2f} line. "
+               f"The model is not sure enough to say, and a confident wrong answer is worse than none.")
+            + "</p>",
             unsafe_allow_html=True,
         )
     else:
@@ -226,6 +243,8 @@ def main():
             f"<p style='text-align:center; font-size:1.3rem; color:grey'>Confidence: <b>{conf*100:.1f}%</b></p>",
             unsafe_allow_html=True,
         )
+    if quality_note:
+        st.warning(quality_note)
     if is_mask_head:
         st.caption("Probabilities are softmax outputs, not calibrated: a 0.99 on a wrong "
                    "answer is not rarer than a 0.6 on one. The threshold was set by "

@@ -1,8 +1,9 @@
 # Handover
 
 The live state of the project. Read this first; the README is the account and
-may lag behind by a run or two, this file should not. Last updated 2026-09-22,
-at commit `4ac63208`, with uncommitted doc corrections from 2026-09-22.
+may lag behind by a run or two, this file should not. Last updated 2026-11-05,
+on top of commit `5dd45701`; the calibration report, README section and this
+file's cleanup and calibration notes are uncommitted.
 
 ## What this is, in three sentences
 
@@ -28,6 +29,17 @@ class from OpenSDI's sd15 shards, re-encoded to 512px JPEG q90.
 | mean held-out-generator recall, 9 rows | 0.723 | `heldout_generators.json` |
 | abstain line (top prob) | 0.90: answers 56%, right 94% of those | `decision_rule.json` |
 | compression: clean / 256px q80 / 224px q50 | 0.832 / 0.680 / 0.605 | `degradation.json` |
+| 95% intervals: accuracy / held-out mean recall | 0.791 to 0.816 / 0.708 to 0.737 | `calibration.json` |
+| ECE (15 bins), mean confidence vs accuracy | 0.060, 0.864 vs 0.804 (overconfident) | `calibration.json` |
+
+The 0.8040 and the ECE are on the same split the best epoch was chosen on (epoch
+4 of 10, picked by accuracy on the test split in `train_mask_head.py`; there is no
+separate validation split), so they are slightly optimistic. The abstain line was
+also chosen on saved probabilities from that split. The held-out cells are clean
+of this. Confusion is almost entirely real versus edited (about 25 percent each
+way); `ai_generated` is 96.7 percent correct. Figures and the script:
+`results/mask_head_clip448_balanced/calibration_*.png`,
+`scripts/evaluation/calibration_report.py`.
 
 **Two other trained models exist and are not the headline:**
 
@@ -39,9 +51,15 @@ class from OpenSDI's sd15 shards, re-encoded to 512px JPEG q90.
   training images. Worse on every measurement (0.7911, held-out 0.689). Kept as
   a negative result.
 
-**The original models** (ConvNeXt, ResNet, in `models/`) still load and run, so
-the frontend can compare them on the same upload. They are what `LIMITATIONS.md`
-sections 1 to 8 are about. Do not quote their numbers as detection results.
+**The original models** (ConvNeXt, ResNet) are what `LIMITATIONS.md` sections 1
+to 8 are about. Do not quote their numbers as detection results. Only runs 17
+(the frontend's comparison model) and 19 (the slow gradcam test) are kept in
+`models/`. The other 24 runs, `stage2_refiner`, `sweep_w150_100_150` and the old
+`data_sources/ai_generated` downloads were moved on 2026-10-26 to
+`/mnt/c/d_drive/projects/deepfake_archive/` (same relative paths, checksum
+verified, 6,233 files). `models/` is gitignored, so that copy is the only one;
+copy a folder back to rerun it. The `.venv/` was an empty duplicate of
+`venv-linux/` and was deleted.
 
 ## What is open
 
@@ -56,8 +74,16 @@ sections 1 to 8 are about. Do not quote their numbers as detection results.
    account and should be read and edited by the author.
 3. **The abstain rule does not detect degraded input.** Coverage stays at 50 to
    55 percent across the compression grid while accuracy-when-answered falls
-   from 0.958 to 0.705. A quality check in front of the model would be the fix;
-   none exists.
+   from 0.958 to 0.705. `frontend/quality.py` now gates on the raw upload: short
+   side under 256px or JPEG quality under 65 withholds the verdict ("cannot
+   tell"), short side under 448 or quality under 85 shows a warning. The bands
+   are read off the 7-cell degradation grid, where size and quality were lowered
+   together, so they are coarse and not fitted. Blur is not gated because it was
+   never measured. Wired into the CLI (`--no-quality-gate` turns it off) and the
+   UI. The module and its 8 tests pass and it reads q90 / 512px on 450 sampled
+   training and held-out files, but the CLI and UI wiring has only been
+   compile-checked, not run with a model. Whether the gate actually helps is not
+   measured: that needs the degradation grid rerun with it in front, on the GPU.
 4. **Localisation.** IoU 0.272 against the paper's 0.671, and the DINOv2 head
    that classifies worse localises better (0.385). Not pursued; one paragraph in
    LIMITATIONS.
@@ -89,7 +115,7 @@ venv-linux/bin/python -m streamlit run frontend/app.py
 # your own photos
 venv-linux/bin/python scripts/inference/predict_mask_head.py my_photos/
 
-# tests: 46 in the files, 44 run by default; RUN_SLOW=1 adds the two that load the model on CPU
+# tests: 59 in the files, 57 run by default; RUN_SLOW=1 adds the two that load the model on CPU
 venv-linux/bin/python -m unittest discover -s tests -t .
 
 # retrain the headline model (about 90 minutes on the RTX 4060 laptop GPU)
@@ -97,6 +123,15 @@ venv-linux/bin/python scripts/training/train_mask_head.py \
     --encoder clip:ViT_B_16 --size 448 --data_dir data_sources/opensdi_large \
     --mask_dir data_sources/opensdi_large_masks --max-per-class 4500 \
     --epochs 10 --batch 8 --class-weights 1.5 1.0 1.0 --out results/<name>
+
+# same, but choosing the epoch on a validation split instead of the test split
+# (adds --val-frac 0.15; frozen encoder only; the test split does not move).
+# NOT yet run end to end: the split logic is unit-tested (tests/test_val_split.py),
+# the training loop change was only compile-checked. Run it once, watch epoch 1.
+#   ... same flags ... --val-frac 0.15 --out results/<name>
+# then pick the abstain line on validation, not test:
+#   venv-linux/bin/python scripts/evaluation/abstain_sweep.py --run results/<name> --split val
+#   venv-linux/bin/python scripts/evaluation/abstain_sweep.py --run results/<name> --split val --choose <tau>
 
 # then the three evaluations, in this order
 venv-linux/bin/python scripts/evaluation/mask_head_generalisation.py --checkpoint results/<name>/best_model.pth

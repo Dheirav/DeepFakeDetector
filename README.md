@@ -441,6 +441,53 @@ and both the UI and the CLI read it. For a tool meant to help someone decide
 whether to trust an image, declining to answer is a correct output and a
 confident wrong answer is the worst one.
 
+The abstain line looks at the model's own confidence, and that does not move
+when the input is degraded: across the compression grid coverage stays at 50 to
+55 percent while accuracy when answered falls from 0.958 to 0.705. So the CLI and
+UI also check the raw file before it is re-encoded (`frontend/quality.py`). A
+short side under 256px or an estimated JPEG quality under 65 withholds the
+verdict, and under 448px or 85 shows a warning with the measured accuracy. Those
+bands are read off the seven-cell degradation grid, where size and quality were
+lowered together, so they are coarse. Blur is not checked because the grid never
+measured it. That the gate improves results has not been measured yet.
+
+### Calibration, the confusion matrix and how much to trust each number
+
+`scripts/evaluation/calibration_report.py` recomputes these from the saved
+probabilities with a 2,000-resample bootstrap (seed 42). It loads no model and
+fits no recalibration.
+
+| measure | value | 95% interval |
+|---|---|---|
+| accuracy, balanced test split (4,050) | 0.8040 | 0.791 to 0.816 |
+| F1 `real` | 0.727 | 0.707 to 0.745 |
+| F1 `ai_generated` | 0.961 | 0.954 to 0.969 |
+| F1 `ai_edited` | 0.722 | 0.703 to 0.741 |
+| mean held-out recall, 9 cells | 0.723 | 0.708 to 0.737 |
+| expected calibration error (15 bins) | 0.060 | 0.052 to 0.073 |
+
+![Confusion matrix](results/mask_head_clip448_balanced/calibration_confusion.png)
+
+`ai_generated` is nearly clean (96.7 percent correct). The errors are almost all
+between `real` and `ai_edited`: 25.5 percent of real images are called edited and
+25.6 percent of edited images are called real. That pair is where the current
+model's remaining error is.
+
+The model is overconfident. Mean top-class probability is 0.864 against 0.804
+accuracy, and about half the test images land in the top confidence bin, so a
+high number from this model means less than it looks like. That is why the
+abstain rule above exists, and why it was set on measured accuracy and not on the
+raw probability.
+
+![Reliability diagram](results/mask_head_clip448_balanced/calibration_reliability.png)
+
+Two cautions on reading these. The in-distribution figures are on the same split
+the best epoch (4 of 10) was selected on, because `train_mask_head.py` keeps the
+epoch with the best accuracy there and has no separate validation split, so
+0.8040 and the ECE are slightly optimistic. The held-out cells were never used for
+selection and are the cleaner numbers, but each has 400 images, which puts every
+cell about 4.5 points either side of its value.
+
 ### The test that started this
 
 The first photo I gave the rebuilt model was one I took at an event. The frozen
@@ -511,6 +558,10 @@ venv-linux/bin/python scripts/evaluation/mask_head_generalisation.py \
 # where to put the "cannot tell" line, and your own photos through the model
 venv-linux/bin/python scripts/evaluation/abstain_sweep.py --choose 0.9
 venv-linux/bin/python scripts/inference/predict_mask_head.py my_photos/
+
+# confusion matrix, calibration and bootstrap intervals (no model, no GPU)
+venv-linux/bin/python scripts/evaluation/calibration_report.py \
+    --run results/mask_head_clip448_balanced
 ```
 
 ---

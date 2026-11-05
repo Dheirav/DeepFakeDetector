@@ -46,11 +46,20 @@ def main():
     ap.add_argument("--taus", default="0.5,0.6,0.7,0.8,0.9,0.95,0.98")
     ap.add_argument("--choose", type=float, default=None,
                     help="tau to write into decision_rule.json (default: none written)")
+    ap.add_argument("--split", choices=["test", "val"], default="test",
+                    help="which saved split the in-distribution table (and --choose) "
+                         "uses. 'val' needs a run trained with --val-frac, and is the "
+                         "way to pick tau without tuning it on the test split.")
     args = ap.parse_args()
     taus = [float(t) for t in args.taus.split(",")]
 
-    P = np.load(os.path.join(args.run, "probs.npy")); y = np.load(os.path.join(args.run, "y_true.npy"))
-    print(f"  in-distribution test split, n={len(y)}")
+    pf, yf = (("val_probs.npy", "val_y_true.npy") if args.split == "val"
+              else ("probs.npy", "y_true.npy"))
+    if not os.path.exists(os.path.join(args.run, pf)):
+        raise SystemExit(f"{args.run}/{pf} not found. --split val needs a run trained "
+                         "with train_mask_head.py --val-frac.")
+    P = np.load(os.path.join(args.run, pf)); y = np.load(os.path.join(args.run, yf))
+    print(f"  in-distribution {args.split} split, n={len(y)}")
     print(f"  {'tau':>5}{'coverage':>10}{'acc|ans':>9}   precision real/gen/edit    recall real/gen/edit")
     for t in taus:
         cov, acc, pr, rc = summarise(P, y, t)
@@ -81,6 +90,7 @@ def main():
         rule = {"abstain_below": args.choose, "coverage_in_distribution": float(cov),
                 "accuracy_when_answered": float(acc),
                 "precision_when_answered": {c: float(v) for c, v in zip(CLASSES, pr)},
+                "chosen_on_split": args.split,
                 "source": "scripts/evaluation/abstain_sweep.py on this run's saved probabilities"}
         json.dump(rule, open(os.path.join(args.run, "decision_rule.json"), "w"), indent=2)
         print(f"\n  wrote {args.run}/decision_rule.json  (abstain below {args.choose})")

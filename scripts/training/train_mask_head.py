@@ -209,6 +209,30 @@ def build_encoder(name, size, device, unfreeze=0):
     return enc, features, dim, grid
 
 
+def make_splits(labels, test_size, val_frac, seed):
+    """Train / validation / test indices.
+
+    The test split is the original single call and nothing about it depends on
+    `val_frac`, so every run, with or without a validation split, is scored on
+    the same images. That is what makes McNemar valid across runs. The
+    validation split is carved out of the training indices only, so asking for
+    one shrinks training and leaves the test set alone.
+
+    Without one, the best epoch was chosen on the test split itself, which makes
+    the reported accuracy slightly optimistic. With one, the epoch (and an abstain
+    threshold, via abstain_sweep.py --split val) is chosen here and the test split
+    is scored once, at the end.
+    """
+    from sklearn.model_selection import train_test_split
+    tr, te = train_test_split(np.arange(len(labels)), test_size=test_size,
+                              random_state=seed, stratify=labels)
+    if not val_frac:
+        return tr, np.array([], dtype=tr.dtype), te
+    tr, va = train_test_split(tr, test_size=val_frac, random_state=seed + 1,
+                              stratify=labels[tr])
+    return tr, va, te
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -230,6 +254,12 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--test-size", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--val-frac", type=float, default=0.0, metavar="F",
+                    help="fraction of the TRAINING indices held out as a validation "
+                         "split. The test split is unchanged. When set, the best "
+                         "epoch is chosen on validation and the test split is scored "
+                         "once, with the best weights. 0 keeps the old behaviour "
+                         "(epoch chosen on the test split). Frozen encoder only.")
     ap.add_argument("--out", default="results/mask_head")
     ap.add_argument("--unfreeze", type=int, default=0,
                     help="train the last N encoder blocks. Every eliminated lever "
@@ -254,6 +284,10 @@ def main():
     args = ap.parse_args()
     if not args.encoder.startswith("clip:"):
         assert args.size % 14 == 0, "DINOv2 patches are 14px"
+    # Restoring the best epoch for the final test pass only handles the decoder
+    # and classifier. Partly unfrozen encoder weights are not restored here.
+    assert not (args.val_frac and args.unfreeze), "--val-frac needs a frozen encoder"
+    assert 0.0 <= args.val_frac < 1.0
 
     import numpy as np, torch, torch.nn as nn, torch.nn.functional as F
     from PIL import Image
@@ -274,9 +308,8 @@ def main():
         for f in names:
             files.append(os.path.join(d, f)); labels.append(ci)
     files, labels = np.array(files), np.array(labels)
-    tr, te = train_test_split(np.arange(len(labels)), test_size=args.test_size,
-                              random_state=args.seed, stratify=labels)
-    print(f"  {len(files)} images  train {len(tr)}  test {len(te)}")
+    tr, va, te = make_splits(labels, args.test_size, args.val_frac, args.seed)
+    print(f"  {len(files)} images  train {len(tr)}  val {len(va)}  test {len(te)}")
 
     norm = transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 
@@ -348,12 +381,15 @@ def main():
         print(f"  smooth-patch augmentation on real / in-mask noise on edited, p={args.smooth_aug}")
     dl_tr = DataLoader(DS(tr, augment=True), batch_size=args.batch, shuffle=True, num_workers=args.workers)
     dl_te = DataLoader(DS(te), batch_size=args.batch, shuffle=False, num_workers=args.workers)
+    dl_va = (DataLoader(DS(va), batch_size=args.batch, shuffle=False, num_workers=args.workers)
+             if args.val_frac else None)
+    selection_loader = dl_va if args.val_frac else dl_te
 
-    def evaluate():
+    def evaluate(loader):
         dec.eval(); clf.eval()
         preds, trues, ious, probs = [], [], [], []
         with torch.no_grad():
-            for x, y, m, v in dl_te:
+            for x, y, m, v in loader:
                 x, m = x.to(device), m.to(device)
                 fmap, cls = features(x)
                 up = F.interpolate(dec(fmap), size=(args.size, args.size),
@@ -399,7 +435,7 @@ def main():
                 print(f"    batch {bi+1}/{len(dl_tr)}", flush=True)
         # Evaluate every epoch. 'Loss still falling' does not imply accuracy is
         # still improving, and the difference decides whether to train longer.
-        trues, preds, miou, probs = evaluate()
+        trues, preds, miou, probs = evaluate(selection_loader)
         acc = float((trues == preds).mean())
         f1e = float(f1_score(trues, preds, average=None, labels=[0, 1, 2])[EDITED])
         history.append({"epoch": ep + 1, "loss": tot / len(tr), "accuracy": acc,
@@ -419,10 +455,27 @@ def main():
                 sd = enc.state_dict()
                 ck["encoder_state"] = {k: sd[k].cpu() for k in enc.trainable_keys}
             torch.save(ck, os.path.join(args.out, "best_model.pth"))
+            if args.val_frac:
+                # In memory, so the final test pass needs no reload from disk.
+                best["state"] = {
+                    "decoder": {k: v.detach().cpu().clone() for k, v in dec.state_dict().items()},
+                    "classifier": {k: v.detach().cpu().clone() for k, v in clf.state_dict().items()}}
             star = "  <- best"
         print(f"  epoch {ep+1:>3}/{args.epochs}  loss {tot/len(tr):.4f}  "
               f"acc {acc:.4f}  ai_edited F1 {f1e:.4f}  IoU {miou:.4f}{star}", flush=True)
 
+    val_accuracy = None
+    if args.val_frac:
+        # Epoch was chosen on validation. Keep those arrays for threshold work,
+        # then score the test split once with the best weights.
+        val_accuracy = best["accuracy"]
+        np.save(os.path.join(args.out, "val_probs.npy"), best["probs"])
+        np.save(os.path.join(args.out, "val_y_true.npy"), np.array(best["trues"]))
+        dec.load_state_dict(best["state"]["decoder"])
+        clf.load_state_dict(best["state"]["classifier"])
+        t_, p_, i_, pr_ = evaluate(dl_te)
+        best = dict(best, trues=t_, preds=p_, mask_iou=i_, probs=pr_)
+        print(f"\n  validation accuracy at best epoch: {val_accuracy:.4f}  (test scored once below)")
     trues, preds, miou = best["trues"], best["preds"], best["mask_iou"]
     print(f"\n  best epoch: {best['epoch']}/{args.epochs}")
     f1 = f1_score(trues, preds, average=None, labels=[0, 1, 2])
@@ -441,11 +494,16 @@ def main():
                "best_epoch": best["epoch"], "history": history,
                "unfreeze": args.unfreeze, "enc_lr_scale": args.enc_lr_scale,
                "smooth_aug": args.smooth_aug,
+               "val_frac": args.val_frac, "val_accuracy": val_accuracy,
+               "selection_split": "val" if args.val_frac else "test",
                "note": ("frozen encoder; " if not args.unfreeze else
                         f"last {args.unfreeze} encoder blocks trained at "
                         f"{args.enc_lr_scale}x lr; ")
                        + "decoder and classifier trained; "
-                       "reported figures are from the best epoch by accuracy"},
+                       + ("best epoch chosen on a validation split, test scored once"
+                          if args.val_frac else
+                          "reported figures are from the best epoch by accuracy "
+                          "on the test split itself")},
               open(os.path.join(args.out, "training_summary.json"), "w"), indent=2)
     print(f"  saved -> {args.out}")
 
